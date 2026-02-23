@@ -175,7 +175,7 @@ impl TransactionsContract {
         from.require_auth();
 
         if amount <= 0 {
-            panic_with_error!(&env, TimelockError::InvalidScheduleTime);
+            panic_with_error!(&env, MultiSigError::InvalidAmount);
         }
 
         let now = env.ledger().timestamp();
@@ -196,6 +196,8 @@ impl TransactionsContract {
             created_at: now,
             executed: false,
             canceled: false,
+            executed_at: None,
+            canceled_at: None,
         };
 
         timelock::save_timelock(&env, &tx);
@@ -236,6 +238,7 @@ impl TransactionsContract {
         Self::execute_transfer(&env, &tx.from, &tx.to, tx.amount);
 
         tx.executed = true;
+        tx.executed_at = Some(now);
         timelock::update_timelock(&env, &tx);
 
         TimelockEvents::executed(&env, &tx, &caller);
@@ -263,6 +266,7 @@ impl TransactionsContract {
         }
 
         tx.canceled = true;
+        tx.canceled_at = Some(env.ledger().timestamp());
         timelock::update_timelock(&env, &tx);
 
         TimelockEvents::cancelled(&env, &tx, &caller);

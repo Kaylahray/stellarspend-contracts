@@ -26,6 +26,10 @@ pub struct TimelockedTx {
     pub created_at: u64,
     pub executed: bool,
     pub canceled: bool,
+    /// Actual ledger timestamp when execution happened.
+    pub executed_at: Option<u64>,
+    /// Actual ledger timestamp when cancellation happened.
+    pub canceled_at: Option<u64>,
 }
 
 #[contracterror]
@@ -69,6 +73,7 @@ impl TimelockEvents {
                 tx.amount,
                 tx.asset.clone(),
                 tx.execute_at,
+                tx.executed_at,
             ),
         );
     }
@@ -85,6 +90,7 @@ impl TimelockEvents {
                 tx.amount,
                 tx.asset.clone(),
                 tx.execute_at,
+                tx.canceled_at,
             ),
         );
     }
