@@ -38,6 +38,8 @@ pub enum GovernanceError {
     ProposalExpired = 6,
     AlreadyExecuted = 7,
     NotEnoughApprovals = 8,
+    Overflow = 9,
+    InvalidInput = 10,
 }
 
 pub struct GovernanceEvents;
@@ -86,6 +88,9 @@ pub fn require_admin(env: &Env, caller: &Address) {
     }
 }
 
+/// Maximum length for config key and value strings
+const MAX_CONFIG_STRING_LENGTH: u32 = 256;
+
 pub fn create_proposal(
     env: &Env,
     proposer: Address,
@@ -95,13 +100,28 @@ pub fn create_proposal(
 ) -> u32 {
     proposer.require_auth();
 
+    // Validate input string lengths
+    if config_key.len() > MAX_CONFIG_STRING_LENGTH || config_key.len() == 0 {
+        panic_with_error!(env, GovernanceError::InvalidInput);
+    }
+    if config_value.len() > MAX_CONFIG_STRING_LENGTH {
+        panic_with_error!(env, GovernanceError::InvalidInput);
+    }
+    if duration_seconds == 0 {
+        panic_with_error!(env, GovernanceError::InvalidInput);
+    }
+
     let count: u32 = env.storage().instance()
         .get(&GovernanceDataKey::ProposalCount)
         .unwrap_or_else(|| panic_with_error!(env, GovernanceError::NotInitialized));
 
-    let new_id = count + 1;
+    let new_id = count
+        .checked_add(1)
+        .unwrap_or_else(|| panic_with_error!(env, GovernanceError::Overflow));
     let current_time = env.ledger().timestamp();
-    let deadline = current_time + duration_seconds;
+    let deadline = current_time
+        .checked_add(duration_seconds)
+        .unwrap_or_else(|| panic_with_error!(env, GovernanceError::Overflow));
 
     let proposal = Proposal {
         id: new_id,
@@ -144,7 +164,9 @@ pub fn vote_proposal(env: &Env, voter: Address, proposal_id: u32) {
     }
 
     env.storage().persistent().set(&vote_key, &true);
-    proposal.approvals += 1;
+    proposal.approvals = proposal.approvals
+        .checked_add(1)
+        .unwrap_or_else(|| panic_with_error!(env, GovernanceError::Overflow));
     env.storage().persistent().set(&GovernanceDataKey::Proposal(proposal_id), &proposal);
 
     GovernanceEvents::voted(env, proposal_id, &voter);

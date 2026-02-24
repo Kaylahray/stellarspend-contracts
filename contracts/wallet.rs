@@ -143,6 +143,17 @@ pub fn require_admin(env: &Env, caller: &Address) {
 pub fn link_wallet(env: &Env, caller: Address, wallet_address: Address, owner_address: Address) {
     caller.require_auth();
     
+    // Validate that wallet_address and owner_address are different
+    if wallet_address == owner_address {
+        panic_with_error!(env, WalletError::InvalidSignature);
+    }
+    
+    // Validate caller is either admin or the owner
+    let admin = get_admin(env);
+    if caller != admin && caller != owner_address {
+        panic_with_error!(env, WalletError::Unauthorized);
+    }
+    
     // Check if wallet is already linked
     if env.storage().instance().has(&DataKey::LinkedWallet(wallet_address.clone())) {
         panic_with_error!(env, WalletError::WalletAlreadyLinked);

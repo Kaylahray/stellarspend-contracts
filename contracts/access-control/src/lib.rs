@@ -65,7 +65,7 @@ impl AccessControlContract {
     /// Initialize the contract with an admin address
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("Contract already initialized");
+            panic_with_error!(&env, AccessControlError::NotInitialized);
         }
 
         admin.require_auth();
@@ -93,7 +93,7 @@ impl AccessControlContract {
     /// Assign a role to a user (admin only)
     pub fn grant_role(env: Env, caller: Address, user: Address, role: Role) {
         caller.require_auth();
-        Self::require_admin(&env, caller);
+        Self::require_admin(&env, &caller);
 
         // Get or create user's role map
         let mut roles: Map<Role, bool> = env
@@ -131,7 +131,7 @@ impl AccessControlContract {
     /// Revoke a role from a user (admin only)
     pub fn revoke_role(env: Env, caller: Address, user: Address, role: Role) {
         caller.require_auth();
-        Self::require_admin(&env, caller);
+        Self::require_admin(&env, &caller);
 
         // Prevent admin from revoking their own admin role
         if caller == user && role == Role::Admin {
@@ -195,7 +195,7 @@ impl AccessControlContract {
     /// Transfer admin role to a new address (current admin only)
     pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
-        Self::require_admin(&env, current_admin);
+        Self::require_admin(&env, &current_admin);
 
         // Revoke admin role from current admin
         let mut current_roles: Map<Role, bool> = env
@@ -234,7 +234,7 @@ impl AccessControlContract {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("Contract not initialized")
+            .unwrap_or_else(|| panic_with_error!(&env, AccessControlError::NotInitialized))
     }
 
     /// Get total number of role assignments
@@ -245,20 +245,23 @@ impl AccessControlContract {
             .unwrap_or(0)
     }
 
-    /// Require that the caller has admin role
-    pub fn require_admin(env: &Env, caller: &Address) {
+}
+
+impl AccessControlContract {
+    /// Internal helper: Require that the caller has admin role
+    fn require_admin(env: &Env, caller: &Address) {
         let admin: Address = env
             .storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("Contract not initialized");
-        if caller != admin {
+            .unwrap_or_else(|| panic_with_error!(env, AccessControlError::NotInitialized));
+        if caller != &admin {
             panic_with_error!(env, AccessControlError::Unauthorized);
         }
     }
 
-    /// Require that the caller has a specific role
-    pub fn require_role(env: &Env, caller: &Address, role: Role) {
+    /// Internal helper: Require that the caller has a specific role
+    fn require_role(env: &Env, caller: &Address, role: Role) {
         let roles: Map<Role, bool> = env
             .storage()
             .instance()
@@ -270,8 +273,8 @@ impl AccessControlContract {
         }
     }
 
-    /// Require that the caller has admin OR a specific role
-    pub fn require_admin_or_role(env: &Env, caller: &Address, role: Role) {
+    /// Internal helper: Require that the caller has admin OR a specific role
+    fn require_admin_or_role(env: &Env, caller: &Address, role: Role) {
         let roles: Map<Role, bool> = env
             .storage()
             .instance()

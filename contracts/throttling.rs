@@ -271,7 +271,9 @@ pub fn check_transaction_throttle(env: &Env, wallet_address: Address) -> Throttl
         // Trigger throttling
         wallet_state.is_throttled = true;
         wallet_state.throttle_start_time = current_time;
-        wallet_state.violation_count += 1;
+        wallet_state.violation_count = wallet_state.violation_count
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(env, ThrottleError::Overflow));
 
         let violation = ThrottleViolation {
             wallet_address: wallet_address.clone(),
@@ -303,10 +305,14 @@ pub fn check_transaction_throttle(env: &Env, wallet_address: Address) -> Throttl
         };
     }
 
-    // Transaction is allowed
-    wallet_state.transaction_count += 1;
+    // Transaction is allowed - use checked arithmetic
+    wallet_state.transaction_count = wallet_state.transaction_count
+        .checked_add(1)
+        .unwrap_or_else(|| panic_with_error!(env, ThrottleError::Overflow));
     wallet_state.last_transaction_time = current_time;
-    wallet_state.total_transactions_all_time += 1;
+    wallet_state.total_transactions_all_time = wallet_state.total_transactions_all_time
+        .checked_add(1)
+        .unwrap_or_else(|| panic_with_error!(env, ThrottleError::Overflow));
 
     let remaining = config.max_transactions_per_window - wallet_state.transaction_count;
 

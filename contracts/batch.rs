@@ -32,6 +32,10 @@ pub enum BatchBudgetError {
     InvalidAmount = 6,
     /// Duplicate user in batch
     DuplicateUser = 7,
+    /// Arithmetic overflow detected
+    Overflow = 8,
+    /// Already initialized
+    AlreadyInitialized = 9,
 }
 
 impl From<BatchBudgetError> for soroban_sdk::Error {
@@ -100,7 +104,7 @@ impl BatchBudgetContract {
     /// Initializes the contract with an admin address.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("Already initialized");
+            panic_with_error!(&env, BatchBudgetError::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::TotalAllocated, &0i128);
@@ -132,13 +136,14 @@ impl BatchBudgetContract {
             panic_with_error!(&env, BatchBudgetError::BatchTooLarge);
         }
 
-        // Get batch ID
+        // Get batch ID with overflow protection
         let batch_id: u64 = env
             .storage()
             .instance()
             .get(&DataKey::TotalBatches)
             .unwrap_or(0)
-            + 1;
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, BatchBudgetError::Overflow));
 
         // Emit batch started event
         env.events().publish(
@@ -220,12 +225,12 @@ impl BatchBudgetContract {
                 0
             };
 
-            // Update total allocated
+            // Update total allocated with overflow protection
             total_allocated = total_allocated
                 .checked_sub(old_amount)
-                .unwrap_or(0)
+                .unwrap_or_else(|| panic_with_error!(&env, BatchBudgetError::Overflow))
                 .checked_add(request.amount)
-                .unwrap_or(i128::MAX);
+                .unwrap_or_else(|| panic_with_error!(&env, BatchBudgetError::Overflow));
 
             // Create new budget record
             let record = BudgetRecord {
@@ -245,7 +250,9 @@ impl BatchBudgetContract {
                 request.amount,
             ));
             successful_count += 1;
-            total_amount = total_amount.checked_add(request.amount).unwrap_or(i128::MAX);
+            total_amount = total_amount
+                .checked_add(request.amount)
+                .unwrap_or_else(|| panic_with_error!(&env, BatchBudgetError::Overflow));
 
             // Emit success event
             env.events().publish(
@@ -267,9 +274,12 @@ impl BatchBudgetContract {
             .instance()
             .get(&DataKey::TotalUpdatesProcessed)
             .unwrap_or(0);
+        let new_total_processed = total_processed
+            .checked_add(request_count as u64)
+            .unwrap_or_else(|| panic_with_error!(&env, BatchBudgetError::Overflow));
         env.storage()
             .instance()
-            .set(&DataKey::TotalUpdatesProcessed, &(total_processed + request_count as u64));
+            .set(&DataKey::TotalUpdatesProcessed, &new_total_processed);
 
         // Emit batch completed event
         env.events().publish(
@@ -296,7 +306,7 @@ impl BatchBudgetContract {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("Not initialized")
+            .unwrap_or_else(|| panic_with_error!(&env, BatchBudgetError::NotInitialized))
     }
 
     /// Returns the total allocated budget amount
@@ -329,7 +339,7 @@ impl BatchBudgetContract {
             .storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("Not initialized");
+            .unwrap_or_else(|| panic_with_error!(env, BatchBudgetError::NotInitialized));
 
         if *caller != admin {
             panic_with_error!(env, BatchBudgetError::Unauthorized);

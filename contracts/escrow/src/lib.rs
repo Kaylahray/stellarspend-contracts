@@ -100,19 +100,21 @@ impl EscrowContract {
             .storage()
             .instance()
             .get(&DataKey::Token)
-            .expect("Contract not initialized");
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::NotInitialized));
         let token_client = token::Client::new(&env, &token);
 
         // Transfer funds from depositor to this contract
         token_client.transfer(&depositor, &env.current_contract_address(), &amount);
 
-        // Get and increment escrow counter
-        let escrow_id: u64 = env
+        // Get and increment escrow counter with overflow protection
+        let current_counter: u64 = env
             .storage()
             .instance()
             .get(&DataKey::EscrowCounter)
-            .unwrap_or(0)
-            + 1;
+            .unwrap_or(0);
+        let escrow_id: u64 = current_counter
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::InvalidAmount));
         env.storage()
             .instance()
             .set(&DataKey::EscrowCounter, &escrow_id);
@@ -194,12 +196,12 @@ impl EscrowContract {
             .storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("Contract not initialized");
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::NotInitialized));
         let token: Address = env
             .storage()
             .instance()
             .get(&DataKey::Token)
-            .expect("Contract not initialized");
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::NotInitialized));
         let token_client = token::Client::new(&env, &token);
 
         let current_ledger = env.ledger().sequence() as u64;
@@ -364,12 +366,12 @@ impl EscrowContract {
             .storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("Contract not initialized");
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::NotInitialized));
         let token: Address = env
             .storage()
             .instance()
             .get(&DataKey::Token)
-            .expect("Contract not initialized");
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::NotInitialized));
         let token_client = token::Client::new(&env, &token);
 
         // Emit batch started event
@@ -404,9 +406,9 @@ impl EscrowContract {
         // Second pass: execute releases
         for (request, escrow_opt, is_valid, error_code) in validated_requests.iter() {
             if !is_valid {
-                results.push_back(ReleaseResult::Failure(request.escrow_id, *error_code));
+                results.push_back(ReleaseResult::Failure(request.escrow_id, error_code));
                 failed_count += 1;
-                EscrowEvents::release_failure(&env, batch_id, request.escrow_id, *error_code);
+                EscrowEvents::release_failure(&env, batch_id, request.escrow_id, error_code);
                 continue;
             }
 
@@ -503,17 +505,17 @@ impl EscrowContract {
             .storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("Contract not initialized");
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::NotInitialized));
 
         let escrow: Escrow = env
             .storage()
             .persistent()
             .get(&DataKey::Escrow(escrow_id))
-            .expect("Escrow not found");
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::EscrowNotFound));
 
         // Check authorization: admin, depositor or arbiter
         let is_admin = caller == admin;
-        let is_depositor = caller == &escrow.depositor;
+        let is_depositor = caller == escrow.depositor;
         let is_arbiter = if let Some(arb) = &escrow.arbiter {
             caller == *arb
         } else {
@@ -526,7 +528,7 @@ impl EscrowContract {
 
         // Check escrow is active
         if escrow.status != EscrowStatus::Active {
-            panic!("Escrow is not active");
+            panic_with_error!(&env, EscrowError::Unauthorized);
         }
 
         // Transfer funds to recipient
@@ -566,7 +568,7 @@ impl EscrowContract {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .expect("Contract not initialized")
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::NotInitialized))
     }
 
     /// Updates the admin address.

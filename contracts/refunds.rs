@@ -323,6 +323,7 @@ impl RefundsContract {
 
 impl RefundsContract {
     fn require_admin(env: &Env, caller: &Address) {
+        caller.require_auth();
         let admin = Self::get_admin(env.clone());
         if caller != &admin {
             panic_with_error!(env, StellarSpendError::AdminRequired);
