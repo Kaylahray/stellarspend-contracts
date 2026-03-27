@@ -13,6 +13,8 @@ pub enum DataKey {
     FeePercentage,
     /// Cumulative fees that have been collected through `deduct_fee`.
     TotalFeesCollected,
+    /// Per-user fee accrual tracking. Stores total fees paid by each user.
+    UserFeesAccrued(Address),
 }
 
 #[contracterror]
@@ -156,6 +158,8 @@ impl FeesContract {
     ///   a saturated counter triggers `Overflow` rather than wrapping silently.
     /// - Requires the contract to be initialized; `calculate_fee` propagates
     ///   `NotInitialized` via `get_percentage` if called before `initialize`.
+    /// - [SEC-FEES-08] Per-user fee tracking is updated with `checked_add` to
+    ///   prevent overflow on per-user accumulation.
     pub fn deduct_fee(env: Env, payer: Address, amount: i128) -> (i128, i128) {
         // [SEC-FEES-06] Authenticate before any computation or state change.
         payer.require_auth();
@@ -184,6 +188,23 @@ impl FeesContract {
         env.storage()
             .instance()
             .set(&DataKey::TotalFeesCollected, &total);
+
+        // [SEC-FEES-08] Update per-user fee accrual tracking.
+        let mut user_fees: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserFeesAccrued(payer.clone()))
+            .unwrap_or(0);
+
+        // [SEC-FEES-08] Checked addition for per-user total.
+        user_fees = user_fees
+            .checked_add(fee)
+            .unwrap_or_else(|| panic_with_error!(&env, FeeError::Overflow));
+
+        env.storage()
+            .instance()
+            .set(&DataKey::UserFeesAccrued(payer.clone()), &user_fees);
+
         FeeEvents::fee_deducted(&env, &payer, amount, fee);
         (net, fee)
     }
@@ -193,6 +214,22 @@ impl FeesContract {
         env.storage()
             .instance()
             .get(&DataKey::TotalFeesCollected)
+            .unwrap_or(0)
+    }
+
+    /// Returns the total fees accrued by a specific user.
+    ///
+    /// Returns 0 if the user has not accrued any fees yet.
+    ///
+    /// # Arguments
+    /// * `user` - The address of the user to query
+    ///
+    /// # Returns
+    /// Total fees paid by the user in stroops (smallest unit)
+    pub fn get_user_fees_accrued(env: Env, user: Address) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::UserFeesAccrued(user))
             .unwrap_or(0)
     }
 }
