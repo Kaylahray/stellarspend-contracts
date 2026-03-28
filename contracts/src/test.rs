@@ -563,7 +563,432 @@ fn test_multiple_priority_transactions() {
     
     // Total collected should be sum of all fees
     assert_eq!(FeeContract::get_total_collected(env.clone()), 5300);
-    
+
     // User fees accrued should match
     assert_eq!(FeeContract::get_user_fees_accrued(env.clone(), payer.clone()), 5300);
+}
+
+// =============================================================================
+// Asset-aware Fee Tests
+// =============================================================================
+
+#[test]
+fn test_set_and_get_asset_fee_config() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 500);
+
+    FeeContract::set_asset_fee_config(
+        env.clone(),
+        admin.clone(),
+        asset.clone(),
+        200,  // 2% fee rate
+        0,    // no min fee
+        0,    // no max fee
+    );
+
+    let config = FeeContract::get_asset_fee_config(env.clone(), asset.clone());
+    assert_eq!(config.fee_rate, 200);
+    assert_eq!(config.min_fee, 0);
+    assert_eq!(config.max_fee, 0);
+    assert_eq!(config.asset, asset);
+}
+
+#[test]
+fn test_calculate_asset_fee_uses_asset_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    // Default fee rate is 1% (100 bps), asset rate is 2% (200 bps)
+    FeeContract::initialize(env.clone(), admin.clone(), 100);
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), asset.clone(), 200, 0, 0);
+
+    // Medium priority (1.0x multiplier): 2% of 10000 = 200
+    let fee = FeeContract::calculate_asset_fee(
+        env.clone(),
+        asset.clone(),
+        10_000,
+        PriorityLevel::Medium,
+    );
+    assert_eq!(fee, 200);
+}
+
+#[test]
+fn test_calculate_asset_fee_falls_back_to_default() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let unconfigured_asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    // Default fee rate is 1% (100 bps), no asset config set
+    FeeContract::initialize(env.clone(), admin.clone(), 100);
+
+    // Should fall back to default 1% rate: 1% of 10000 = 100
+    let fee = FeeContract::calculate_asset_fee(
+        env.clone(),
+        unconfigured_asset.clone(),
+        10_000,
+        PriorityLevel::Medium,
+    );
+    assert_eq!(fee, 100);
+}
+
+#[test]
+fn test_calculate_asset_fee_with_priority() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 500);
+    // Asset fee rate: 1% (100 bps)
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), asset.clone(), 100, 0, 0);
+
+    let amount = 10_000i128;
+
+    // Low: 1% * 0.8 = 0.8% => 80
+    let low_fee = FeeContract::calculate_asset_fee(env.clone(), asset.clone(), amount, PriorityLevel::Low);
+    assert_eq!(low_fee, 80);
+
+    // Medium: 1% * 1.0 = 1% => 100
+    let medium_fee = FeeContract::calculate_asset_fee(env.clone(), asset.clone(), amount, PriorityLevel::Medium);
+    assert_eq!(medium_fee, 100);
+
+    // High: 1% * 1.5 = 1.5% => 150
+    let high_fee = FeeContract::calculate_asset_fee(env.clone(), asset.clone(), amount, PriorityLevel::High);
+    assert_eq!(high_fee, 150);
+
+    // Urgent: 1% * 2.0 = 2% => 200
+    let urgent_fee = FeeContract::calculate_asset_fee(env.clone(), asset.clone(), amount, PriorityLevel::Urgent);
+    assert_eq!(urgent_fee, 200);
+}
+
+#[test]
+fn test_asset_fee_min_max_bounds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 100);
+    // fee_rate=50 bps (0.5%), min=100, max=500
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), asset.clone(), 50, 100, 500);
+
+    // 0.5% of 1000 = 5, below min of 100 -> clamped to 100
+    let fee_low = FeeContract::calculate_asset_fee(env.clone(), asset.clone(), 1_000, PriorityLevel::Medium);
+    assert_eq!(fee_low, 100);
+
+    // 0.5% of 1_000_000 = 5000, above max of 500 -> clamped to 500
+    let fee_high = FeeContract::calculate_asset_fee(env.clone(), asset.clone(), 1_000_000, PriorityLevel::Medium);
+    assert_eq!(fee_high, 500);
+}
+
+#[test]
+fn test_deduct_asset_fee_tracks_balances_independently() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let xlm_asset = Address::generate(&env);
+    let usdc_asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 100);
+    // XLM: 1% fee, USDC: 2% fee
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), xlm_asset.clone(), 100, 0, 0);
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), usdc_asset.clone(), 200, 0, 0);
+
+    // Deduct XLM fee: 1% of 10000 = 100
+    let (xlm_net, xlm_fee) = FeeContract::deduct_asset_fee(
+        env.clone(), payer.clone(), xlm_asset.clone(), 10_000, PriorityLevel::Medium,
+    );
+    assert_eq!(xlm_fee, 100);
+    assert_eq!(xlm_net, 9_900);
+
+    // Deduct USDC fee: 2% of 10000 = 200
+    let (usdc_net, usdc_fee) = FeeContract::deduct_asset_fee(
+        env.clone(), payer.clone(), usdc_asset.clone(), 10_000, PriorityLevel::Medium,
+    );
+    assert_eq!(usdc_fee, 200);
+    assert_eq!(usdc_net, 9_800);
+
+    // Per-asset balances tracked independently
+    assert_eq!(FeeContract::get_asset_fees_collected(env.clone(), xlm_asset.clone()), 100);
+    assert_eq!(FeeContract::get_asset_fees_collected(env.clone(), usdc_asset.clone()), 200);
+
+    // Per-user per-asset fees tracked independently
+    assert_eq!(FeeContract::get_user_asset_fees_accrued(env.clone(), payer.clone(), xlm_asset.clone()), 100);
+    assert_eq!(FeeContract::get_user_asset_fees_accrued(env.clone(), payer.clone(), usdc_asset.clone()), 200);
+
+    // Global total includes both
+    assert_eq!(FeeContract::get_total_collected(env.clone()), 300);
+}
+
+#[test]
+fn test_multiple_users_per_asset_tracked_independently() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let payer_a = Address::generate(&env);
+    let payer_b = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 100);
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), asset.clone(), 100, 0, 0);
+
+    FeeContract::deduct_asset_fee(env.clone(), payer_a.clone(), asset.clone(), 10_000, PriorityLevel::Medium);
+    FeeContract::deduct_asset_fee(env.clone(), payer_b.clone(), asset.clone(), 20_000, PriorityLevel::Medium);
+
+    // Each user's accrued fees tracked separately
+    assert_eq!(FeeContract::get_user_asset_fees_accrued(env.clone(), payer_a.clone(), asset.clone()), 100);
+    assert_eq!(FeeContract::get_user_asset_fees_accrued(env.clone(), payer_b.clone(), asset.clone()), 200);
+
+    // Asset total is the sum
+    assert_eq!(FeeContract::get_asset_fees_collected(env.clone(), asset.clone()), 300);
+}
+
+#[test]
+#[should_panic]
+fn test_set_asset_fee_config_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 100);
+    FeeContract::set_asset_fee_config(env.clone(), non_admin.clone(), asset.clone(), 200, 0, 0);
+}
+
+#[test]
+#[should_panic]
+fn test_set_asset_fee_config_invalid_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 100);
+    // fee_rate > 10_000 is invalid
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), asset.clone(), 10_001, 0, 0);
+}
+
+// =============================================================================
+// Batch Fee Tests
+// =============================================================================
+
+fn make_tx(
+    payer: Address,
+    asset: Address,
+    amount: i128,
+    priority: PriorityLevel,
+) -> FeeTransaction {
+    FeeTransaction { payer, asset, amount, priority }
+}
+
+#[test]
+fn test_calculate_batch_fees_no_state_change() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 100); // 1% default
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), asset.clone(), 200, 0, 0); // 2% for asset
+
+    let mut txs: Vec<FeeTransaction> = Vec::new(&env);
+    txs.push_back(make_tx(payer.clone(), asset.clone(), 10_000, PriorityLevel::Medium));
+    txs.push_back(make_tx(payer.clone(), asset.clone(), 5_000, PriorityLevel::High));
+
+    let result = FeeContract::calculate_batch_fees(env.clone(), txs);
+
+    // tx0: 2% * 1.0 of 10000 = 200
+    assert_eq!(result.results.get(0).unwrap().fee, 200);
+    assert_eq!(result.results.get(0).unwrap().net_amount, 9_800);
+    // tx1: 2% * 1.5 of 5000 = 150
+    assert_eq!(result.results.get(1).unwrap().fee, 150);
+    assert_eq!(result.results.get(1).unwrap().net_amount, 4_850);
+    // aggregate
+    assert_eq!(result.total_fees, 350);
+
+    // simulate is read-only — global total must still be zero
+    assert_eq!(FeeContract::get_total_collected(env.clone()), 0);
+    assert_eq!(FeeContract::get_asset_fees_collected(env.clone(), asset.clone()), 0);
+}
+
+#[test]
+fn test_deduct_batch_fees_aggregates_correctly() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let payer_a = Address::generate(&env);
+    let payer_b = Address::generate(&env);
+    let xlm = Address::generate(&env);
+    let usdc = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 100); // 1% default
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), xlm.clone(), 100, 0, 0);  // 1%
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), usdc.clone(), 200, 0, 0); // 2%
+
+    let mut txs: Vec<FeeTransaction> = Vec::new(&env);
+    // payer_a pays 1% on 10_000 XLM at medium priority  -> fee 100
+    txs.push_back(make_tx(payer_a.clone(), xlm.clone(), 10_000, PriorityLevel::Medium));
+    // payer_b pays 2% on 5_000 USDC at medium priority  -> fee 100
+    txs.push_back(make_tx(payer_b.clone(), usdc.clone(), 5_000, PriorityLevel::Medium));
+    // payer_a pays 1% * 2.0 (urgent) on 10_000 XLM     -> fee 200
+    txs.push_back(make_tx(payer_a.clone(), xlm.clone(), 10_000, PriorityLevel::Urgent));
+
+    let result = FeeContract::deduct_batch_fees(env.clone(), txs);
+
+    assert_eq!(result.results.get(0).unwrap().fee, 100);
+    assert_eq!(result.results.get(1).unwrap().fee, 100);
+    assert_eq!(result.results.get(2).unwrap().fee, 200);
+    assert_eq!(result.total_fees, 400);
+
+    // Per-asset balances tracked independently
+    assert_eq!(FeeContract::get_asset_fees_collected(env.clone(), xlm.clone()), 300);
+    assert_eq!(FeeContract::get_asset_fees_collected(env.clone(), usdc.clone()), 100);
+
+    // Per-user per-asset
+    assert_eq!(FeeContract::get_user_asset_fees_accrued(env.clone(), payer_a.clone(), xlm.clone()), 300);
+    assert_eq!(FeeContract::get_user_asset_fees_accrued(env.clone(), payer_b.clone(), usdc.clone()), 100);
+
+    // Global total
+    assert_eq!(FeeContract::get_total_collected(env.clone()), 400);
+}
+
+#[test]
+fn test_deduct_batch_fees_single_transaction() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 500); // 5% default
+
+    let mut txs: Vec<FeeTransaction> = Vec::new(&env);
+    txs.push_back(make_tx(payer.clone(), asset.clone(), 10_000, PriorityLevel::Medium));
+
+    let result = FeeContract::deduct_batch_fees(env.clone(), txs);
+
+    // Falls back to default 5% rate: 500
+    assert_eq!(result.results.get(0).unwrap().fee, 500);
+    assert_eq!(result.results.get(0).unwrap().net_amount, 9_500);
+    assert_eq!(result.total_fees, 500);
+    assert_eq!(FeeContract::get_total_collected(env.clone()), 500);
+}
+
+#[test]
+fn test_deduct_batch_fees_updates_user_global_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 100);
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), asset.clone(), 100, 0, 0);
+
+    let mut txs: Vec<FeeTransaction> = Vec::new(&env);
+    txs.push_back(make_tx(payer.clone(), asset.clone(), 10_000, PriorityLevel::Low));    // 0.8% = 80
+    txs.push_back(make_tx(payer.clone(), asset.clone(), 10_000, PriorityLevel::Medium)); // 1.0% = 100
+    txs.push_back(make_tx(payer.clone(), asset.clone(), 10_000, PriorityLevel::High));   // 1.5% = 150
+
+    let result = FeeContract::deduct_batch_fees(env.clone(), txs);
+    assert_eq!(result.total_fees, 330);
+
+    // Per-user global balance reflects all three
+    assert_eq!(FeeContract::get_user_fees_accrued(env.clone(), payer.clone()), 330);
+}
+
+#[test]
+fn test_deduct_batch_fees_emits_batch_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 100);
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), asset.clone(), 100, 0, 0);
+
+    let mut txs: Vec<FeeTransaction> = Vec::new(&env);
+    txs.push_back(make_tx(payer.clone(), asset.clone(), 10_000, PriorityLevel::Medium));
+    txs.push_back(make_tx(payer.clone(), asset.clone(), 10_000, PriorityLevel::Medium));
+
+    FeeContract::deduct_batch_fees(env.clone(), txs);
+
+    let events = env.events().all();
+    assert!(events.iter().any(|e| {
+        e.topics.0 == symbol_short!("fee") && e.topics.1 == symbol_short!("batch")
+    }));
+}
+
+#[test]
+#[should_panic]
+fn test_deduct_batch_fees_rejects_zero_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 100);
+
+    let mut txs: Vec<FeeTransaction> = Vec::new(&env);
+    txs.push_back(make_tx(payer.clone(), asset.clone(), 0, PriorityLevel::Medium));
+
+    FeeContract::deduct_batch_fees(env.clone(), txs);
+}
+
+#[test]
+fn test_calculate_batch_fees_mixed_assets_and_priorities() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let xlm = Address::generate(&env);
+    let usdc = Address::generate(&env);
+    let unconfigured = Address::generate(&env);
+    let _contract_id = env.register(FeeContract, ());
+
+    FeeContract::initialize(env.clone(), admin.clone(), 100); // 1% default
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), xlm.clone(), 50, 0, 0);   // 0.5%
+    FeeContract::set_asset_fee_config(env.clone(), admin.clone(), usdc.clone(), 300, 0, 0); // 3%
+
+    let mut txs: Vec<FeeTransaction> = Vec::new(&env);
+    // XLM  0.5% * 1.0 (medium) of 20000 = 100
+    txs.push_back(make_tx(payer.clone(), xlm.clone(), 20_000, PriorityLevel::Medium));
+    // USDC 3% * 2.0 (urgent) of 10000 = 600
+    txs.push_back(make_tx(payer.clone(), usdc.clone(), 10_000, PriorityLevel::Urgent));
+    // unconfigured falls back to 1% default, low priority 0.8 = 0.8% of 5000 = 40
+    txs.push_back(make_tx(payer.clone(), unconfigured.clone(), 5_000, PriorityLevel::Low));
+
+    let result = FeeContract::calculate_batch_fees(env.clone(), txs);
+
+    assert_eq!(result.results.get(0).unwrap().fee, 100);
+    assert_eq!(result.results.get(1).unwrap().fee, 600);
+    assert_eq!(result.results.get(2).unwrap().fee, 40);
+    assert_eq!(result.total_fees, 740);
 }

@@ -123,6 +123,54 @@ pub struct FeeConfig {
 // Storage Keys
 // =============================================================================
 
+/// A single transaction entry for batch processing.
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct FeeTransaction {
+    /// The payer address for this transaction
+    pub payer: Address,
+    /// The asset being used (None falls back to the default fee config)
+    pub asset: Address,
+    /// The transaction amount
+    pub amount: i128,
+    /// The priority level for this transaction
+    pub priority: PriorityLevel,
+}
+
+/// Result for a single transaction within a batch.
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct FeeTransactionResult {
+    /// Net amount after fee deduction
+    pub net_amount: i128,
+    /// Fee charged for this transaction
+    pub fee: i128,
+}
+
+/// Aggregate result returned by batch fee processing.
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct BatchFeeResult {
+    /// Per-transaction results, in the same order as the input
+    pub results: Vec<FeeTransactionResult>,
+    /// Sum of all fees charged across the batch
+    pub total_fees: i128,
+}
+
+/// Configuration for a specific asset's fee settings.
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct AssetFeeConfig {
+    /// The asset address (contract address for tokens, or native XLM sentinel)
+    pub asset: Address,
+    /// Fee rate in basis points specific to this asset (e.g., 100 = 1%)
+    pub fee_rate: u32,
+    /// Optional minimum fee for this asset (0 = no minimum)
+    pub min_fee: i128,
+    /// Optional maximum fee for this asset (0 = no maximum)
+    pub max_fee: i128,
+}
+
 /// Storage keys used by the fee contract.
 #[derive(Clone)]
 #[contracttype]
@@ -133,14 +181,20 @@ pub enum DataKey {
     FeeConfig,
     /// Priority fee configuration
     PriorityFeeConfig,
-    /// Total fees collected
+    /// Total fees collected (across all assets)
     TotalFeesCollected,
-    /// Per-user fee tracking
+    /// Per-user fee tracking (across all assets)
     UserFeesAccrued(Address),
-    /// Minimum fee threshold
+    /// Minimum fee threshold (default asset)
     MinFee,
-    /// Maximum fee threshold
+    /// Maximum fee threshold (default asset)
     MaxFee,
+    /// Per-asset fee configuration
+    AssetFeeConfig(Address),
+    /// Per-asset total fees collected
+    AssetFeesCollected(Address),
+    /// Per-user per-asset fees accrued
+    UserAssetFeesAccrued(Address, Address),
 }
 
 // =============================================================================
@@ -173,6 +227,8 @@ pub enum FeeError {
     InvalidFeeBound = 10,
     /// Invalid fee bound range
     InvalidFeeBoundRange = 11,
+    /// Asset fee configuration not found
+    AssetNotConfigured = 12,
 }
 
 // =============================================================================
@@ -215,6 +271,33 @@ impl FeeEvents {
     pub fn config_updated(env: &Env, admin: &Address, fee_rate: u32) {
         let topics = (symbol_short!("fee"), symbol_short!("cfg_upd"));
         env.events().publish(topics, (admin.clone(), fee_rate, env.ledger().timestamp()));
+    }
+
+    pub fn asset_config_updated(env: &Env, admin: &Address, asset: &Address, fee_rate: u32) {
+        let topics = (symbol_short!("fee"), symbol_short!("ast_cfg"));
+        env.events()
+            .publish(topics, (admin.clone(), asset.clone(), fee_rate, env.ledger().timestamp()));
+    }
+
+    pub fn asset_fee_deducted(
+        env: &Env,
+        payer: &Address,
+        asset: &Address,
+        amount: i128,
+        fee: i128,
+        priority: PriorityLevel,
+    ) {
+        let topics = (symbol_short!("fee"), symbol_short!("ast_ded"));
+        env.events().publish(
+            topics,
+            (payer.clone(), asset.clone(), amount, fee, priority.to_u32(), env.ledger().timestamp()),
+        );
+    }
+
+    pub fn batch_fees_deducted(env: &Env, count: u32, total_fees: i128) {
+        let topics = (symbol_short!("fee"), symbol_short!("batch"));
+        env.events()
+            .publish(topics, (count, total_fees, env.ledger().timestamp()));
     }
 }
 
@@ -268,6 +351,46 @@ pub fn calculate_fee_with_priority(
 
     // Calculate fee: amount * rate / 10000
     (amount * adjusted_fee_rate as i128) / 10_000
+}
+
+/// Calculate fee for an amount using an asset-specific fee config with priority.
+/// Falls back to the default `FeeConfig` if no asset config is provided.
+pub fn calculate_fee_for_asset(
+    _env: &Env,
+    amount: i128,
+    asset_config: &AssetFeeConfig,
+    priority: &PriorityFeeConfig,
+) -> i128 {
+    if amount <= 0 {
+        return 0;
+    }
+
+    let adjusted_rate = calculate_priority_fee_rate(asset_config.fee_rate, PriorityLevel::default(), priority);
+    let fee = (amount * adjusted_rate as i128) / 10_000;
+
+    let min = asset_config.min_fee;
+    let max = if asset_config.max_fee == 0 { i128::MAX } else { asset_config.max_fee };
+    fee.max(min).min(max)
+}
+
+/// Calculate fee for an amount using an asset-specific fee config and explicit priority.
+pub fn calculate_fee_for_asset_with_priority(
+    _env: &Env,
+    amount: i128,
+    asset_config: &AssetFeeConfig,
+    priority_config: &PriorityFeeConfig,
+    priority: PriorityLevel,
+) -> i128 {
+    if amount <= 0 {
+        return 0;
+    }
+
+    let adjusted_rate = calculate_priority_fee_rate(asset_config.fee_rate, priority, priority_config);
+    let fee = (amount * adjusted_rate as i128) / 10_000;
+
+    let min = asset_config.min_fee;
+    let max = if asset_config.max_fee == 0 { i128::MAX } else { asset_config.max_fee };
+    fee.max(min).min(max)
 }
 
 /// Validate fee windows for correctness.
@@ -565,6 +688,357 @@ impl FeeContract {
             .instance()
             .get(&DataKey::FeeConfig)
             .unwrap_or_else(|| panic_with_error!(&env, FeeError::NotInitialized))
+    }
+
+    // =========================================================================
+    // Asset-aware fee methods
+    // =========================================================================
+
+    /// Configure a per-asset fee rate.
+    /// Only admin can call this.
+    pub fn set_asset_fee_config(
+        env: Env,
+        caller: Address,
+        asset: Address,
+        fee_rate: u32,
+        min_fee: i128,
+        max_fee: i128,
+    ) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        if fee_rate > 10_000 {
+            panic_with_error!(&env, FeeError::InvalidPercentage);
+        }
+        if min_fee < 0 || max_fee < 0 {
+            panic_with_error!(&env, FeeError::InvalidFeeBound);
+        }
+        if max_fee > 0 && max_fee < min_fee {
+            panic_with_error!(&env, FeeError::InvalidFeeBoundRange);
+        }
+
+        let config = AssetFeeConfig {
+            asset: asset.clone(),
+            fee_rate,
+            min_fee,
+            max_fee,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::AssetFeeConfig(asset.clone()), &config);
+
+        FeeEvents::asset_config_updated(&env, &caller, &asset, fee_rate);
+    }
+
+    /// Get the fee configuration for a specific asset.
+    /// Panics with `AssetNotConfigured` if the asset has no config.
+    pub fn get_asset_fee_config(env: Env, asset: Address) -> AssetFeeConfig {
+        env.storage()
+            .instance()
+            .get(&DataKey::AssetFeeConfig(asset))
+            .unwrap_or_else(|| panic_with_error!(&env, FeeError::AssetNotConfigured))
+    }
+
+    /// Calculate fee for an amount denominated in a specific asset, with priority.
+    /// Uses asset-specific fee rate if configured; falls back to default rate.
+    pub fn calculate_asset_fee(
+        env: Env,
+        asset: Address,
+        amount: i128,
+        priority: PriorityLevel,
+    ) -> i128 {
+        if amount <= 0 {
+            panic_with_error!(&env, FeeError::InvalidAmount);
+        }
+
+        let priority_config: PriorityFeeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::PriorityFeeConfig)
+            .unwrap_or_else(PriorityFeeConfig::default);
+
+        // Use asset-specific config if available, otherwise fall back to default
+        if let Some(asset_config) = env
+            .storage()
+            .instance()
+            .get::<DataKey, AssetFeeConfig>(&DataKey::AssetFeeConfig(asset))
+        {
+            calculate_fee_for_asset_with_priority(&env, amount, &asset_config, &priority_config, priority)
+        } else {
+            let fee_config: FeeConfig = env
+                .storage()
+                .instance()
+                .get(&DataKey::FeeConfig)
+                .unwrap_or_else(|| panic_with_error!(&env, FeeError::NotInitialized));
+            calculate_fee_with_priority(&env, amount, &fee_config, priority)
+        }
+    }
+
+    /// Deduct fee for a transaction in a specific asset, with priority.
+    /// Returns `(net_amount, fee_charged)`.
+    /// Tracks fees collected per asset and per user per asset.
+    pub fn deduct_asset_fee(
+        env: Env,
+        payer: Address,
+        asset: Address,
+        amount: i128,
+        priority: PriorityLevel,
+    ) -> (i128, i128) {
+        payer.require_auth();
+        Self::require_initialized(&env);
+
+        let fee = Self::calculate_asset_fee(env.clone(), asset.clone(), amount, priority);
+
+        let net = amount
+            .checked_sub(fee)
+            .unwrap_or_else(|| panic_with_error!(&env, FeeError::Overflow));
+
+        // Update per-asset total collected
+        let mut asset_total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AssetFeesCollected(asset.clone()))
+            .unwrap_or(0);
+        asset_total = asset_total
+            .checked_add(fee)
+            .unwrap_or_else(|| panic_with_error!(&env, FeeError::Overflow));
+        env.storage()
+            .instance()
+            .set(&DataKey::AssetFeesCollected(asset.clone()), &asset_total);
+
+        // Update global total collected
+        let mut total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalFeesCollected)
+            .unwrap_or(0);
+        total = total
+            .checked_add(fee)
+            .unwrap_or_else(|| panic_with_error!(&env, FeeError::Overflow));
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalFeesCollected, &total);
+
+        // Update per-user per-asset fees accrued
+        let mut user_asset_fees: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UserAssetFeesAccrued(payer.clone(), asset.clone()))
+            .unwrap_or(0);
+        user_asset_fees = user_asset_fees
+            .checked_add(fee)
+            .unwrap_or_else(|| panic_with_error!(&env, FeeError::Overflow));
+        env.storage()
+            .instance()
+            .set(&DataKey::UserAssetFeesAccrued(payer.clone(), asset.clone()), &user_asset_fees);
+
+        FeeEvents::asset_fee_deducted(&env, &payer, &asset, amount, fee, priority);
+        (net, fee)
+    }
+
+    /// Get total fees collected for a specific asset.
+    pub fn get_asset_fees_collected(env: Env, asset: Address) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::AssetFeesCollected(asset))
+            .unwrap_or(0)
+    }
+
+    /// Get fees accrued by a specific user for a specific asset.
+    pub fn get_user_asset_fees_accrued(env: Env, user: Address, asset: Address) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::UserAssetFeesAccrued(user, asset))
+            .unwrap_or(0)
+    }
+
+    // =========================================================================
+    // Batch fee methods
+    // =========================================================================
+
+    /// Calculate fees for a batch of transactions without modifying state.
+    ///
+    /// Returns a `BatchFeeResult` with per-transaction results and the aggregate
+    /// total. This is a read-only simulation; no balances are updated.
+    pub fn calculate_batch_fees(env: Env, transactions: Vec<FeeTransaction>) -> BatchFeeResult {
+        Self::require_initialized(&env);
+
+        let priority_config: PriorityFeeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::PriorityFeeConfig)
+            .unwrap_or_else(PriorityFeeConfig::default);
+
+        let fee_config: FeeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeConfig)
+            .unwrap_or_else(|| panic_with_error!(&env, FeeError::NotInitialized));
+
+        let mut results: Vec<FeeTransactionResult> = Vec::new(&env);
+        let mut total_fees: i128 = 0;
+
+        for tx in transactions.iter() {
+            if tx.amount <= 0 {
+                panic_with_error!(&env, FeeError::InvalidAmount);
+            }
+
+            let fee = if let Some(asset_cfg) = env
+                .storage()
+                .instance()
+                .get::<DataKey, AssetFeeConfig>(&DataKey::AssetFeeConfig(tx.asset.clone()))
+            {
+                calculate_fee_for_asset_with_priority(
+                    &env,
+                    tx.amount,
+                    &asset_cfg,
+                    &priority_config,
+                    tx.priority,
+                )
+            } else {
+                calculate_fee_with_priority(&env, tx.amount, &fee_config, tx.priority)
+            };
+
+            let net_amount = tx
+                .amount
+                .checked_sub(fee)
+                .unwrap_or_else(|| panic_with_error!(&env, FeeError::Overflow));
+
+            total_fees = total_fees
+                .checked_add(fee)
+                .unwrap_or_else(|| panic_with_error!(&env, FeeError::Overflow));
+
+            results.push_back(FeeTransactionResult { net_amount, fee });
+        }
+
+        BatchFeeResult { results, total_fees }
+    }
+
+    /// Deduct fees for a batch of transactions atomically.
+    ///
+    /// All payers must have authorised this call. Every transaction in the
+    /// batch is processed or none are (the contract panics on any error,
+    /// which rolls back all storage writes for the invocation).
+    ///
+    /// Returns a `BatchFeeResult` with per-transaction results and the
+    /// aggregate total fees collected.
+    pub fn deduct_batch_fees(
+        env: Env,
+        transactions: Vec<FeeTransaction>,
+    ) -> BatchFeeResult {
+        Self::require_initialized(&env);
+
+        // Require auth from every distinct payer in the batch up-front so we
+        // fail fast before touching any storage.
+        for tx in transactions.iter() {
+            tx.payer.require_auth();
+        }
+
+        let priority_config: PriorityFeeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::PriorityFeeConfig)
+            .unwrap_or_else(PriorityFeeConfig::default);
+
+        let fee_config: FeeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeConfig)
+            .unwrap_or_else(|| panic_with_error!(&env, FeeError::NotInitialized));
+
+        let mut results: Vec<FeeTransactionResult> = Vec::new(&env);
+        let mut batch_total: i128 = 0;
+
+        for tx in transactions.iter() {
+            if tx.amount <= 0 {
+                panic_with_error!(&env, FeeError::InvalidAmount);
+            }
+
+            let fee = if let Some(asset_cfg) = env
+                .storage()
+                .instance()
+                .get::<DataKey, AssetFeeConfig>(&DataKey::AssetFeeConfig(tx.asset.clone()))
+            {
+                calculate_fee_for_asset_with_priority(
+                    &env,
+                    tx.amount,
+                    &asset_cfg,
+                    &priority_config,
+                    tx.priority,
+                )
+            } else {
+                calculate_fee_with_priority(&env, tx.amount, &fee_config, tx.priority)
+            };
+
+            let net_amount = tx
+                .amount
+                .checked_sub(fee)
+                .unwrap_or_else(|| panic_with_error!(&env, FeeError::Overflow));
+
+            // --- per-asset balance ---
+            let mut asset_total: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::AssetFeesCollected(tx.asset.clone()))
+                .unwrap_or(0);
+            asset_total = asset_total
+                .checked_add(fee)
+                .unwrap_or_else(|| panic_with_error!(&env, FeeError::Overflow));
+            env.storage()
+                .instance()
+                .set(&DataKey::AssetFeesCollected(tx.asset.clone()), &asset_total);
+
+            // --- per-user per-asset balance ---
+            let mut user_asset: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::UserAssetFeesAccrued(tx.payer.clone(), tx.asset.clone()))
+                .unwrap_or(0);
+            user_asset = user_asset
+                .checked_add(fee)
+                .unwrap_or_else(|| panic_with_error!(&env, FeeError::Overflow));
+            env.storage()
+                .instance()
+                .set(&DataKey::UserAssetFeesAccrued(tx.payer.clone(), tx.asset.clone()), &user_asset);
+
+            // --- per-user global balance ---
+            let mut user_total: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::UserFeesAccrued(tx.payer.clone()))
+                .unwrap_or(0);
+            user_total = user_total
+                .checked_add(fee)
+                .unwrap_or_else(|| panic_with_error!(&env, FeeError::Overflow));
+            env.storage()
+                .instance()
+                .set(&DataKey::UserFeesAccrued(tx.payer.clone()), &user_total);
+
+            batch_total = batch_total
+                .checked_add(fee)
+                .unwrap_or_else(|| panic_with_error!(&env, FeeError::Overflow));
+
+            FeeEvents::asset_fee_deducted(&env, &tx.payer, &tx.asset, tx.amount, fee, tx.priority);
+            results.push_back(FeeTransactionResult { net_amount, fee });
+        }
+
+        // --- global total ---
+        let mut global_total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalFeesCollected)
+            .unwrap_or(0);
+        global_total = global_total
+            .checked_add(batch_total)
+            .unwrap_or_else(|| panic_with_error!(&env, FeeError::Overflow));
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalFeesCollected, &global_total);
+
+        let count = transactions.len() as u32;
+        FeeEvents::batch_fees_deducted(&env, count, batch_total);
+
+        BatchFeeResult { results, total_fees: batch_total }
     }
 }
 
