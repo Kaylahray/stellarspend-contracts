@@ -123,7 +123,7 @@ pub fn compute_category_metrics(
     // Single pass to aggregate by category
     for tx in transactions.iter() {
         let current = category_map.get(tx.category.clone()).unwrap_or((0, 0, 0));
-        let fee = calculate_fee(&env, tx.amount, &category);
+        let fee = calculate_fee(&env, tx.amount, &tx.category);
         category_map.set(
             tx.category.clone(),
             (

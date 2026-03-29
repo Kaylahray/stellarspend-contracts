@@ -1,16 +1,3 @@
-    /// Pauses fee collection (admin only)
-    pub fn pause_fees(env: Env, admin: Address) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
-        crate::fees::set_fee_paused(&env, &admin, true).expect("Failed to pause fees");
-    }
-
-    /// Resumes fee collection (admin only)
-    pub fn resume_fees(env: Env, admin: Address) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
-        crate::fees::set_fee_paused(&env, &admin, false).expect("Failed to resume fees");
-    }
 //! # Transaction Analytics Contract
 //!
 //! A Soroban smart contract for generating batch analytics for multiple transactions.
@@ -37,8 +24,9 @@ mod fees;
 mod types;
 mod validation;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Symbol, Vec};
 
+// Analytics exports (main branch — complete set)
 pub use crate::analytics::{
     compute_aggregated_analytics, compute_batch_checksum, compute_batch_metrics,
     compute_category_metrics, compute_monthly_analytics, compute_refund_metrics,
@@ -47,32 +35,26 @@ pub use crate::analytics::{
     validate_bundle_transactions, validate_refund_batch, validate_refund_eligibility,
     validate_transaction_for_bundle,
 };
+
+// Fees exports (single, de-duplicated block)
 pub use crate::fees::{
     calculate_batch_fees, calculate_transaction_fee, deduct_fees, get_current_fee_config,
-    store_fee_config, update_fee_config, validate_fee_config,
+    get_operation_fee_config, store_fee_config, store_operation_fee_config, update_fee_config,
+    update_operation_fee_config, validate_fee_config,
 };
+
+// Types exports
 pub use crate::types::{
     AnalyticsEvents, AuditLog, BatchMetrics, BatchStatusUpdateResult, BundleResult,
-    BundledTransaction, CategoryMetrics, DataKey, MonthlySpendingAnalytics, RatingInput,
-    RatingResult, RatingStatus, RefundBatchMetrics, RefundRequest, RefundResult, RefundStatus,
+    BundledTransaction, CategoryMetrics, DataKey, FeeCalculationResult, FeeConfig,
+    FeeDeductionEvent, FeeModel, FeeTier, MonthlySpendingAnalytics, RatingInput, RatingResult,
+    RatingStatus, RefundBatchMetrics, RefundRequest, RefundResult, RefundStatus,
     StatusUpdateResult, Transaction, TransactionStatus, TransactionStatusUpdate,
     UserSpendingSummary, ValidationError, ValidationResult, MAX_BATCH_SIZE,
 };
-pub use crate::types::{FeeCalculationResult, FeeConfig, FeeDeductionEvent, FeeModel, FeeTier};
+
+// Validation exports (single, de-duplicated block)
 pub use crate::validation::{
-    validate_address, validate_amount, validate_amounts, validate_transaction, validate_transactions,
-    validate_refund_request, validate_refund_requests, validate_rating_input, validate_rating_inputs,
-    validate_transaction_status_update, validate_transaction_status_updates, validate_bundled_transaction,
-    validate_bundled_transactions, validate_user_address, validate_year_month, validate_percentage_basis_points,
-    validate_different_addresses, validate_asset_type, validate_asset_amount, validate_asset_amounts,
-};
-pub use crate::fees::{
-    calculate_transaction_fee, calculate_batch_fees, validate_fee_config, store_fee_config,
-    get_current_fee_config, deduct_fees, update_fee_config,
-    get_operation_fee_config, store_operation_fee_config, update_operation_fee_config,
-};
-pub use crate::types::{
-    FeeModel, FeeTier, FeeConfig, FeeCalculationResult, FeeDeductionEvent,
     validate_address, validate_amount, validate_amounts, validate_asset_amount,
     validate_asset_amounts, validate_asset_type, validate_bundled_transaction,
     validate_bundled_transactions, validate_different_addresses, validate_percentage_basis_points,
@@ -188,9 +170,8 @@ impl TransactionAnalyticsContract {
         caller.require_auth();
         Self::require_admin(&env, &caller);
 
-        // Use new validation layer
+        // Validate the transaction batch
         if let Err(validation_error) = validate_transactions(&transactions) {
-            // Convert validation error to contract error
             match validation_error {
                 ValidationError::EmptyBatch => panic_with_error!(&env, AnalyticsError::EmptyBatch),
                 ValidationError::BatchTooLarge => {
@@ -199,6 +180,9 @@ impl TransactionAnalyticsContract {
                 _ => panic_with_error!(&env, AnalyticsError::InvalidBatch),
             }
         }
+
+        // FIX: define tx_count before use
+        let tx_count = transactions.len() as u32;
 
         for tx in transactions.iter() {
             env.storage()
@@ -273,7 +257,6 @@ impl TransactionAnalyticsContract {
         caller.require_auth();
         Self::require_admin(&env, &caller);
 
-        // Validate logs with new validation layer
         if logs.is_empty() {
             panic_with_error!(&env, AnalyticsError::EmptyBatch);
         }
@@ -366,7 +349,6 @@ impl TransactionAnalyticsContract {
         compute_batch_metrics(&env, &transactions, current_ledger)
     }
 
-    // Rating functionality removed for refund implementation
     pub fn update_transaction_statuses(
         env: Env,
         caller: Address,
@@ -375,7 +357,6 @@ impl TransactionAnalyticsContract {
         caller.require_auth();
         Self::require_admin(&env, &caller);
 
-        // Use new validation layer
         if let Err(validation_error) = validate_transaction_status_updates(&updates) {
             match validation_error {
                 ValidationError::EmptyBatch => panic_with_error!(&env, AnalyticsError::EmptyBatch),
@@ -441,7 +422,6 @@ impl TransactionAnalyticsContract {
     pub fn submit_ratings(env: Env, user: Address, ratings: Vec<RatingInput>) -> Vec<RatingResult> {
         user.require_auth();
 
-        // Use new validation layer
         if let Err(validation_error) = validate_rating_inputs(&ratings) {
             match validation_error {
                 ValidationError::EmptyBatch => panic_with_error!(&env, AnalyticsError::EmptyBatch),
@@ -512,10 +492,6 @@ impl TransactionAnalyticsContract {
 
     /// Bundles multiple StellarSpend transactions into a single transaction group.
     ///
-    /// This function validates all transactions, emits events for bundled transactions,
-    /// and handles partial failures gracefully by returning validation results for
-    /// each transaction.
-    ///
     /// # Arguments
     /// * `env` - The contract environment
     /// * `caller` - The address calling this function (must be admin)
@@ -544,16 +520,20 @@ impl TransactionAnalyticsContract {
         caller.require_auth();
         Self::require_admin(&env, &caller);
 
-        // Use new validation layer
         if let Err(validation_error) = validate_bundled_transactions(&bundled_transactions) {
             match validation_error {
-                ValidationError::EmptyBatch => panic_with_error!(&env, AnalyticsError::EmptyBundle),
+                ValidationError::EmptyBatch => {
+                    panic_with_error!(&env, AnalyticsError::EmptyBundle)
+                }
                 ValidationError::BatchTooLarge => {
                     panic_with_error!(&env, AnalyticsError::BundleTooLarge)
                 }
                 _ => panic_with_error!(&env, AnalyticsError::InvalidBatch),
             }
         }
+
+        // FIX: define tx_count before use
+        let tx_count = bundled_transactions.len() as u32;
 
         // Get next bundle ID
         let bundle_id: u64 = env
@@ -640,9 +620,6 @@ impl TransactionAnalyticsContract {
 
     /// Processes a batch of refunds for failed or canceled transactions.
     ///
-    /// This function handles refund requests for multiple transactions, verifying
-    /// eligibility and processing refunds while handling partial failures gracefully.
-    ///
     /// # Arguments
     /// * `env` - The contract environment
     /// * `caller` - The address calling this function (must be admin)
@@ -667,7 +644,6 @@ impl TransactionAnalyticsContract {
         caller.require_auth();
         Self::require_admin(&env, &caller);
 
-        // Use new validation layer
         if let Err(validation_error) = validate_refund_requests(&refund_requests) {
             match validation_error {
                 ValidationError::EmptyBatch => {
@@ -679,6 +655,9 @@ impl TransactionAnalyticsContract {
                 _ => panic_with_error!(&env, AnalyticsError::InvalidRefundBatch),
             }
         }
+
+        // FIX: define request_count before use
+        let request_count = refund_requests.len() as u32;
 
         // Get next refund batch ID
         let refund_batch_id: u64 = env
@@ -761,7 +740,6 @@ impl TransactionAnalyticsContract {
         refund_requests: Vec<RefundRequest>,
         transaction_lookup: soroban_sdk::Map<u64, Transaction>,
     ) -> RefundBatchMetrics {
-        // Use new validation layer
         if let Err(validation_error) = validate_refund_requests(&refund_requests) {
             match validation_error {
                 ValidationError::EmptyBatch => {
@@ -828,8 +806,6 @@ impl TransactionAnalyticsContract {
 
     /// Updates monthly spending analytics for a user.
     ///
-    /// This function calculates and stores monthly spending patterns for a specific user.
-    ///
     /// # Arguments
     /// * `env` - The contract environment
     /// * `caller` - The address calling this function (must be admin)
@@ -848,7 +824,6 @@ impl TransactionAnalyticsContract {
         caller.require_auth();
         Self::require_admin(&env, &caller);
 
-        // Use new validation layer
         if let Err(validation_error) = validate_user_address(&env, &user) {
             match validation_error {
                 ValidationError::InvalidAddress => {
@@ -951,7 +926,6 @@ impl TransactionAnalyticsContract {
         admin.require_auth();
         Self::require_admin(&env, &admin);
 
-        // Validate the new configuration
         if let Err(validation_error) = validate_fee_config(&new_config) {
             match validation_error {
                 ValidationError::InvalidPercentage => {
@@ -963,7 +937,7 @@ impl TransactionAnalyticsContract {
                 _ => panic_with_error!(&env, AnalyticsError::InvalidBatch),
             }
         }
-        
+
         // Capture previous max_fee for event emission
         let previous_max = get_current_fee_config(&env).and_then(|c| c.max_fee);
 
@@ -972,29 +946,55 @@ impl TransactionAnalyticsContract {
 
         // Emit event if max_fee (cap) changed
         if previous_max != new_config.max_fee {
-            crate::types::AnalyticsEvents::fee_cap_changed(&env, &admin, previous_max, new_config.max_fee);
+            crate::types::AnalyticsEvents::fee_cap_changed(
+                &env,
+                &admin,
+                previous_max,
+                new_config.max_fee,
+            );
         }
     }
 
     /// Updates per-operation fee configuration.
-    pub fn update_operation_fee_config(env: Env, admin: Address, operation: Symbol, new_config: FeeConfig) {
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `admin` - The admin address (must be authorized)
+    /// * `operation` - The operation symbol to configure
+    /// * `new_config` - The new fee configuration for this operation
+    pub fn update_operation_fee_config(
+        env: Env,
+        admin: Address,
+        operation: Symbol,
+        new_config: FeeConfig,
+    ) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
 
-        // Validate and store via fees module
         if let Err(validation_error) = crate::fees::validate_fee_config(&new_config) {
             match validation_error {
-                ValidationError::InvalidPercentage => panic_with_error!(&env, AnalyticsError::InvalidBatch),
-                ValidationError::InvalidAmount => panic_with_error!(&env, AnalyticsError::InvalidAmount),
+                ValidationError::InvalidPercentage => {
+                    panic_with_error!(&env, AnalyticsError::InvalidBatch)
+                }
+                ValidationError::InvalidAmount => {
+                    panic_with_error!(&env, AnalyticsError::InvalidAmount)
+                }
                 _ => panic_with_error!(&env, AnalyticsError::InvalidBatch),
             }
         }
 
         let previous = crate::fees::get_operation_fee_config(&env, &operation);
-        crate::fees::store_operation_fee_config(&env, &operation, &new_config).expect("Failed to store operation fee config");
+        crate::fees::store_operation_fee_config(&env, &operation, &new_config)
+            .expect("Failed to store operation fee config");
 
         // Emit operation fee updated event
-        crate::types::AnalyticsEvents::operation_fee_updated(&env, &admin, &operation, previous, new_config);
+        crate::types::AnalyticsEvents::operation_fee_updated(
+            &env,
+            &admin,
+            &operation,
+            previous,
+            new_config,
+        );
     }
 
     /// Gets the current fee configuration.
@@ -1017,15 +1017,12 @@ impl TransactionAnalyticsContract {
     /// # Returns
     /// * `FeeCalculationResult` - The fee calculation result
     pub fn calculate_transaction_fee(env: Env, amount: i128) -> FeeCalculationResult {
-        let config = get_current_fee_config(&env).unwrap_or_else(|| {
-            // Return a default fee configuration if none is set
-            FeeConfig {
-                fee_model: FeeModel::Percentage(10), // 0.1% default
-                min_fee: Some(1),
-                max_fee: None,
-                enabled: true,
-                description: Some(Symbol::new(&env, "Default")),
-            }
+        let config = get_current_fee_config(&env).unwrap_or_else(|| FeeConfig {
+            fee_model: FeeModel::Percentage(10), // 0.1% default
+            min_fee: Some(1),
+            max_fee: None,
+            enabled: true,
+            description: Some(Symbol::new(&env, "Default")),
         });
 
         calculate_transaction_fee(&env, amount, &config)
@@ -1040,18 +1037,30 @@ impl TransactionAnalyticsContract {
     /// # Returns
     /// * `Vec<FeeCalculationResult>` - Vector of fee calculation results
     pub fn calculate_batch_fees(env: Env, amounts: Vec<i128>) -> Vec<FeeCalculationResult> {
-        let config = get_current_fee_config(&env).unwrap_or_else(|| {
-            // Return a default fee configuration if none is set
-            FeeConfig {
-                fee_model: FeeModel::Percentage(10), // 0.1% default
-                min_fee: Some(1),
-                max_fee: None,
-                enabled: true,
-                description: Some(Symbol::new(&env, "Default")),
-            }
+        let config = get_current_fee_config(&env).unwrap_or_else(|| FeeConfig {
+            fee_model: FeeModel::Percentage(10), // 0.1% default
+            min_fee: Some(1),
+            max_fee: None,
+            enabled: true,
+            description: Some(Symbol::new(&env, "Default")),
         });
 
-        calculate_batch_fees(&env, &amounts.into_iter().collect::<Vec<_>>(), &config)
+        // FIX: pass &amounts directly — no invalid iterator conversion
+        calculate_batch_fees(&env, &amounts, &config)
+    }
+
+    /// Pauses fee collection (admin only).
+    pub fn pause_fees(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        crate::fees::set_fee_paused(&env, &admin, true).expect("Failed to pause fees");
+    }
+
+    /// Resumes fee collection (admin only).
+    pub fn resume_fees(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        crate::fees::set_fee_paused(&env, &admin, false).expect("Failed to resume fees");
     }
 
     // Internal helper to verify admin
