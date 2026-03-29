@@ -1,3 +1,10 @@
+#![allow(unused)]
+
+pub mod fee;
+pub mod storage;
+
+#[cfg(test)]
+mod test;
 
 // Solved #213: Feat(contract): implement contract metrics endpoint
 // Tasks implemented: Add getter functions

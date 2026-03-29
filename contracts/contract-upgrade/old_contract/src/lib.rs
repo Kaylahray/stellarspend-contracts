@@ -24,7 +24,11 @@ impl UpgradeableContract {
     }
 
     pub fn upgrade(e: Env, new_wasm_hash: BytesN<32>, new_version: u32) {
-        let admin: Address = e.storage().instance().get(&DataKey::Admin).expect("Admin not set");
+        let admin: Address = e
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Admin not set");
         admin.require_auth();
 
         // [SEC-UPGRADE-01] Version check: Prevent downgrades
@@ -43,9 +47,11 @@ impl UpgradeableContract {
 
         e.deployer()
             .update_current_contract_wasm(new_wasm_hash.clone());
-        
-        e.events()
-            .publish((symbol_short!("upgrade"), current_version, new_version), new_wasm_hash);
+
+        e.events().publish(
+            (symbol_short!("upgrade"), current_version, new_version),
+            new_wasm_hash,
+        );
     }
 }
 
