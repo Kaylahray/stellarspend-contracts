@@ -10,9 +10,9 @@ use crate::escrow::{
 };
 use crate::storage::{
     has_admin, read_admin, read_current_cycle, read_escrow_balance, read_fee_bps, read_locked,
-    read_pending_fees, read_token, read_total_batch_calls, read_total_collected,
+	read_min_fee, read_pending_fees, read_token, read_total_batch_calls, read_total_collected,
     read_total_released, read_treasury, write_admin, write_current_cycle, write_fee_bps,
-    write_locked, write_token, write_treasury,
+	write_locked, write_min_fee, write_token, write_treasury,
 };
 pub use crate::storage::{BatchFeeResult, DataKey, MAX_BATCH_SIZE, MAX_FEE_BPS};
 
@@ -90,6 +90,11 @@ impl FeeEvents {
         env.events()
             .publish(topics, (symbol_short!("treasury"), treasury.clone()));
     }
+
+	pub fn min_fee_updated(env: &Env, min_fee: i128) {
+		let topics = (symbol_short!("fee"), symbol_short!("config"));
+		env.events().publish(topics, (symbol_short!("min_fee"), min_fee));
+	}
 }
 
 #[contract]
@@ -211,6 +216,19 @@ impl FeeContract {
         FeeEvents::treasury_updated(&env, &treasury);
     }
 
+	pub fn set_min_fee(env: Env, admin: Address, min_fee: i128) {
+		admin.require_auth();
+		Self::require_admin(&env, &admin);
+		Self::require_unlocked(&env);
+
+		if min_fee < 0 {
+			panic_with_error!(&env, FeeContractError::InvalidConfig);
+		}
+
+		write_min_fee(&env, min_fee);
+		FeeEvents::min_fee_updated(&env, min_fee);
+	}
+
     pub fn get_admin(env: Env) -> Address {
         read_admin(&env)
     }
@@ -226,6 +244,10 @@ impl FeeContract {
     pub fn get_fee_bps(env: Env) -> u32 {
         read_fee_bps(&env)
     }
+
+	pub fn get_min_fee(env: Env) -> i128 {
+		read_min_fee(&env)
+	}
 
     pub fn is_locked(env: Env) -> bool {
         read_locked(&env)
