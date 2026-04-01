@@ -2,6 +2,7 @@
 
 mod decay;
 mod escrow;
+mod reconciliation;
 mod events;
 mod storage;
 mod validation;
@@ -15,6 +16,8 @@ use crate::decay::calculate_fee_decay;
 use crate::escrow::{
     collect_batch_to_escrow, collect_to_escrow, release_cycle_fees, rollover_cycle_fees,
 };
+use crate::reconciliation::reconcile;
+pub use crate::reconciliation::ReconciliationResult;
 use crate::events::TierEvents;
 use crate::storage::{
     has_admin, read_admin, read_current_cycle, read_escrow_balance, read_fee_bps, read_last_active,
@@ -106,6 +109,17 @@ impl FeeEvents {
         let topics = (symbol_short!("fee"), symbol_short!("config"));
         env.events()
             .publish(topics, (symbol_short!("min_fee"), min_fee));
+    }
+
+    pub fn fee_reconciled(env: &Env, stored: i128, calculated: i128) {
+        let topics = (symbol_short!("fee"), symbol_short!("recon"));
+        env.events().publish(topics, (stored, calculated));
+    }
+
+    pub fn fee_discrepancy(env: &Env, stored: i128, calculated: i128, discrepancy: i128) {
+        let topics = (symbol_short!("fee"), symbol_short!("discrep"));
+        env.events()
+            .publish(topics, (stored, calculated, discrepancy));
     }
 }
 
@@ -365,6 +379,34 @@ impl FeeContract {
         true
     }
 
+    /// Run fee reconciliation: compare the stored escrow balance against the
+    /// calculated balance (total_collected - total_released). Emits a
+    /// reconciliation event and, if a discrepancy is found, a discrepancy event.
+    /// Admin-only.
+    pub fn reconcile_fees(env: Env, admin: Address) -> ReconciliationResult {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+
+        let result = reconcile(&env);
+
+        if result.is_reconciled {
+            FeeEvents::fee_reconciled(&env, result.stored_balance, result.calculated_balance);
+        } else {
+            FeeEvents::fee_discrepancy(
+                &env,
+                result.stored_balance,
+                result.calculated_balance,
+                result.discrepancy,
+            );
+        }
+
+        result
+    }
+
+    /// Read-only reconciliation check. Returns the current reconciliation
+    /// status without requiring admin privileges or emitting events.
+    pub fn get_reconciliation_status(env: Env) -> ReconciliationResult {
+        reconcile(&env)
     /// Assigns a fee tier to a user. Admin-only.
     /// Valid tiers: `bronze`, `silver`, `gold`, `platinum`.
     pub fn set_user_tier(env: Env, admin: Address, user: Address, tier: Symbol) {
