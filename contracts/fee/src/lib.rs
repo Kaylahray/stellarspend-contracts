@@ -6,11 +6,13 @@ mod reconciliation;
 mod events;
 mod storage;
 mod validation;
+mod utils;
+mod auth;
 
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, symbol_short, Address, Env, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Symbol, Vec};
 
 use crate::decay::calculate_fee_decay;
 use crate::escrow::{
@@ -18,16 +20,18 @@ use crate::escrow::{
 };
 use crate::reconciliation::reconcile;
 pub use crate::reconciliation::ReconciliationResult;
-use crate::events::TierEvents;
+use crate::events::{FeeEvents, TierEvents};
 use crate::storage::{
-    has_admin, read_admin, read_current_cycle, read_escrow_balance, read_fee_bps, read_last_active,
-    read_locked, read_min_fee, read_pending_fees, read_token, read_total_batch_calls,
-    read_total_collected, read_total_released, read_treasury, write_admin, write_current_cycle,
-    write_fee_bps, write_last_active, write_locked, write_min_fee, write_token, write_treasury,
-    is_valid_tier, read_user_tier, remove_user_tier, write_user_tier,
+    has_admin, is_valid_tier, read_admin, read_current_cycle, read_escrow_balance, read_fee_bps,
+    read_last_active, read_locked, read_min_fee, read_pending_fees, read_token,
+    read_total_batch_calls, read_total_collected, read_total_released, read_treasury,
+    read_user_tier, remove_user_tier, write_admin, write_current_cycle, write_fee_bps,
+    write_last_active, write_locked, write_min_fee, write_token, write_treasury, write_user_tier,
 };
 pub use crate::storage::{BatchFeeResult, DataKey, MAX_BATCH_SIZE, MAX_FEE_BPS};
 use crate::validation::{validate_fee_bps_or_panic, validate_min_fee_or_panic};
+use crate::auth::require_admin;
+use crate::utils::compute_fee;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -52,76 +56,6 @@ impl From<FeeContractError> for soroban_sdk::Error {
     }
 }
 
-pub struct FeeEvents;
-
-impl FeeEvents {
-    pub fn fee_escrowed(env: &Env, payer: &Address, amount: i128, cycle: u64) {
-        let topics = (symbol_short!("fee"), symbol_short!("escrowed"));
-        env.events().publish(topics, (payer.clone(), amount, cycle));
-    }
-
-    pub fn fee_batched(
-        env: &Env,
-        payer: &Address,
-        total_amount: i128,
-        batch_size: u32,
-        cycle: u64,
-    ) {
-        let topics = (symbol_short!("fee"), symbol_short!("batched"));
-        env.events()
-            .publish(topics, (payer.clone(), total_amount, batch_size, cycle));
-    }
-
-    pub fn fee_released(env: &Env, cycle: u64, amount: i128, treasury: &Address) {
-        let topics = (symbol_short!("fee"), symbol_short!("released"));
-        env.events()
-            .publish(topics, (cycle, amount, treasury.clone()));
-    }
-
-    pub fn fee_rolled(env: &Env, from_cycle: u64, to_cycle: u64, amount: i128) {
-        let topics = (symbol_short!("fee"), symbol_short!("rollover"));
-        env.events().publish(topics, (from_cycle, to_cycle, amount));
-    }
-
-    pub fn locked(env: &Env) {
-        let topics = (symbol_short!("fee"), symbol_short!("locked"));
-        env.events().publish(topics, ());
-    }
-
-    pub fn unlocked(env: &Env) {
-        let topics = (symbol_short!("fee"), symbol_short!("unlocked"));
-        env.events().publish(topics, ());
-    }
-
-    pub fn fee_bps_updated(env: &Env, fee_bps: u32) {
-        let topics = (symbol_short!("fee"), symbol_short!("config"));
-        env.events()
-            .publish(topics, (symbol_short!("bps"), fee_bps));
-    }
-
-    pub fn treasury_updated(env: &Env, treasury: &Address) {
-        let topics = (symbol_short!("fee"), symbol_short!("config"));
-        env.events()
-            .publish(topics, (symbol_short!("treasury"), treasury.clone()));
-    }
-
-    pub fn min_fee_updated(env: &Env, min_fee: i128) {
-        let topics = (symbol_short!("fee"), symbol_short!("config"));
-        env.events()
-            .publish(topics, (symbol_short!("min_fee"), min_fee));
-    }
-
-    pub fn fee_reconciled(env: &Env, stored: i128, calculated: i128) {
-        let topics = (symbol_short!("fee"), symbol_short!("recon"));
-        env.events().publish(topics, (stored, calculated));
-    }
-
-    pub fn fee_discrepancy(env: &Env, stored: i128, calculated: i128, discrepancy: i128) {
-        let topics = (symbol_short!("fee"), symbol_short!("discrep"));
-        env.events()
-            .publish(topics, (stored, calculated, discrepancy));
-    }
-}
 
 #[contract]
 pub struct FeeContract;
@@ -154,6 +88,13 @@ impl FeeContract {
         write_current_cycle(&env, initial_cycle);
     }
 
+    /// Initializes the contract with default fee configuration:
+    /// - Fee: 3.00% (300 BPS)
+    /// - Initial Cycle: 1
+    pub fn init(env: Env, admin: Address, token: Address, treasury: Address) {
+        Self::initialize(env, admin, token, treasury, 300, 1);
+    }
+
     pub fn collect_fee(env: Env, payer: Address, amount: i128) -> i128 {
         payer.require_auth();
         
@@ -165,6 +106,7 @@ impl FeeContract {
         
         write_last_active(&env, &payer, current_time);
         
+        FeeEvents::fee_collected(&env, &payer, amount);
         FeeEvents::fee_escrowed(&env, &payer, decayed_amount, read_current_cycle(&env));
         pending
     }
@@ -184,7 +126,11 @@ impl FeeContract {
         let current_time = env.ledger().timestamp();
 
         let mut decayed_amounts = Vec::new(&env);
+        let mut total_original_amount: i128 = 0;
         for amount in amounts.iter() {
+            total_original_amount = total_original_amount
+                .checked_add(amount)
+                .unwrap_or_else(|| panic_with_error!(&env, FeeContractError::Overflow));
             decayed_amounts.push_back(calculate_fee_decay(&env, amount, last_active, current_time));
         }
 
@@ -192,6 +138,7 @@ impl FeeContract {
         
         write_last_active(&env, &payer, current_time);
 
+        FeeEvents::fee_collected(&env, &payer, total_original_amount);
         FeeEvents::fee_batched(
             &env,
             &payer,
@@ -211,18 +158,16 @@ impl FeeContract {
         read_last_active(&env, &user)
     }
 
-    pub fn release_fees(env: Env, admin: Address, cycle: u64) -> i128 {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
+    pub fn release_fees(env: Env, _admin: Address, cycle: u64) -> i128 {
+        require_admin(&env, &_admin);
 
         let released = release_cycle_fees(&env, cycle);
         FeeEvents::fee_released(&env, cycle, released, &read_treasury(&env));
         released
     }
 
-    pub fn rollover_fees(env: Env, admin: Address, next_cycle: u64) -> i128 {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
+    pub fn rollover_fees(env: Env, _admin: Address, next_cycle: u64) -> i128 {
+        require_admin(&env, &_admin);
 
         let current_cycle = read_current_cycle(&env);
         if next_cycle <= current_cycle {
@@ -235,25 +180,22 @@ impl FeeContract {
         rolled
     }
 
-    pub fn lock(env: Env, admin: Address) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
+    pub fn lock(env: Env, _admin: Address) {
+        require_admin(&env, &_admin);
 
         write_locked(&env, true);
         FeeEvents::locked(&env);
     }
 
-    pub fn unlock(env: Env, admin: Address) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
+    pub fn unlock(env: Env, _admin: Address) {
+        require_admin(&env, &_admin);
 
         write_locked(&env, false);
         FeeEvents::unlocked(&env);
     }
 
-    pub fn set_fee_bps(env: Env, admin: Address, fee_bps: u32) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
+    pub fn set_fee_bps(env: Env, _admin: Address, fee_bps: u32) {
+        require_admin(&env, &_admin);
         Self::require_unlocked(&env);
 
         validate_fee_bps_or_panic(&env, fee_bps);
@@ -262,18 +204,16 @@ impl FeeContract {
         FeeEvents::fee_bps_updated(&env, fee_bps);
     }
 
-    pub fn set_treasury(env: Env, admin: Address, treasury: Address) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
+    pub fn set_treasury(env: Env, _admin: Address, treasury: Address) {
+        require_admin(&env, &_admin);
         Self::require_unlocked(&env);
 
         write_treasury(&env, &treasury);
         FeeEvents::treasury_updated(&env, &treasury);
     }
 
-    pub fn set_min_fee(env: Env, admin: Address, min_fee: i128) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
+    pub fn set_min_fee(env: Env, _admin: Address, min_fee: i128) {
+        require_admin(&env, &_admin);
         Self::require_unlocked(&env);
 
         validate_min_fee_or_panic(&env, min_fee);
@@ -379,13 +319,18 @@ impl FeeContract {
         true
     }
 
+    /// Calculates a fee based on the given amount and basis points (bps).
+    /// Returns the calculated fee or panics on overflow.
+    pub fn calculate_fee_amount(env: Env, amount: i128, bps: u32) -> i128 {
+        compute_fee(amount, bps).unwrap_or_else(|| panic_with_error!(&env, FeeContractError::Overflow))
+    }
+
     /// Run fee reconciliation: compare the stored escrow balance against the
     /// calculated balance (total_collected - total_released). Emits a
     /// reconciliation event and, if a discrepancy is found, a discrepancy event.
     /// Admin-only.
-    pub fn reconcile_fees(env: Env, admin: Address) -> ReconciliationResult {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
+    pub fn reconcile_fees(env: Env, _admin: Address) -> ReconciliationResult {
+        require_admin(&env, &_admin);
 
         let result = reconcile(&env);
 
@@ -407,27 +352,27 @@ impl FeeContract {
     /// status without requiring admin privileges or emitting events.
     pub fn get_reconciliation_status(env: Env) -> ReconciliationResult {
         reconcile(&env)
+    }
+
     /// Assigns a fee tier to a user. Admin-only.
     /// Valid tiers: `bronze`, `silver`, `gold`, `platinum`.
-    pub fn set_user_tier(env: Env, admin: Address, user: Address, tier: Symbol) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
+    pub fn set_user_tier(env: Env, _admin: Address, user: Address, tier: Symbol) {
+        require_admin(&env, &_admin);
 
         if !is_valid_tier(&env, &tier) {
             panic_with_error!(&env, FeeContractError::InvalidTier);
         }
 
         write_user_tier(&env, &user, &tier);
-        TierEvents::tier_set(&env, &admin, &user, &tier);
+        TierEvents::tier_set(&env, &read_admin(&env), &user, &tier);
     }
 
     /// Removes the fee tier from a user, resetting them to default. Admin-only.
-    pub fn remove_user_tier(env: Env, admin: Address, user: Address) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
+    pub fn remove_user_tier(env: Env, _admin: Address, user: Address) {
+        require_admin(&env, &_admin);
 
         remove_user_tier(&env, &user);
-        TierEvents::tier_removed(&env, &admin, &user);
+        TierEvents::tier_removed(&env, &read_admin(&env), &user);
     }
 
     /// Returns the tier assigned to a user, or `None` if no tier is set.
@@ -435,16 +380,6 @@ impl FeeContract {
         read_user_tier(&env, &user)
     }
 
-    fn require_admin(env: &Env, caller: &Address) {
-        if !has_admin(env) {
-            panic_with_error!(env, FeeContractError::NotInitialized);
-        }
-
-        let admin = read_admin(env);
-        if admin != *caller {
-            panic_with_error!(env, FeeContractError::Unauthorized);
-        }
-    }
 
     fn require_unlocked(env: &Env) {
         if read_locked(env) {

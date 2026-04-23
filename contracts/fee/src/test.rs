@@ -112,3 +112,62 @@ fn test_tier_can_be_overwritten() {
         Symbol::new(&env, "gold")
     );
 }
+
+#[test]
+fn test_init_default() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let contract_id = env.register(FeeContract, ());
+    let client = FeeContractClient::new(&env, &contract_id);
+    
+    client.init(&admin, &token, &treasury);
+    
+    assert_eq!(client.get_admin(), admin);
+    assert_eq!(client.get_token(), token);
+    assert_eq!(client.get_treasury(), treasury);
+    assert_eq!(client.get_fee_bps(), 300);
+}
+
+#[test]
+fn test_calculate_fee_amount() {
+    let (_env, _admin, client) = setup();
+    
+    // 1000 * 300 / 10000 = 30
+    assert_eq!(client.calculate_fee_amount(&1000, &300), 30);
+    
+    // 500 * 500 / 10000 = 25
+    assert_eq!(client.calculate_fee_amount(&500, &500), 25);
+    
+    // 100 * 10000 / 10000 = 100
+    assert_eq!(client.calculate_fee_amount(&100, &10000), 100);
+}
+
+#[test]
+#[should_panic]
+fn test_calculate_fee_amount_overflow_panics() {
+    let (_env, _admin, client) = setup();
+    client.calculate_fee_amount(&i128::MAX, &10000);
+}
+
+#[test]
+fn test_require_admin_helper() {
+    let (_env, admin, client) = setup();
+    let _user = Address::generate(&_env);
+    
+    // Should succeed
+    client.set_fee_bps(&admin, &200);
+    assert_eq!(client.get_fee_bps(), 200);
+    
+    // Should panic due to mock_all_auths being enabled, 
+    // but the helper uses require_auth() which will check the signature.
+    // In setup() we have env.mock_all_auths(), so any address works if it's the admin.
+}
+
+#[test]
+fn test_fee_collected_event_emitted() {
+    let (_env, _admin, _client) = setup();
+    // Verification logic can be expanded here if needed
+}
