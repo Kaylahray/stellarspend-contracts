@@ -187,3 +187,122 @@ fn test_validate_min_fee_invalid() {
     assert_eq!(validate_min_fee(-1), Err(FeeContractError::InvalidConfig));
     assert_eq!(validate_min_fee(-1000), Err(FeeContractError::InvalidConfig));
 }
+
+#[test]
+fn test_set_max_fee_valid() {
+    let (env, admin, client) = setup();
+    
+    // Set a valid max fee
+    client.set_max_fee(&admin, &1000000i128);
+    assert_eq!(client.get_max_fee(), 1000000);
+}
+
+#[test]
+#[should_panic]
+fn test_set_max_fee_unauthorized_panics() {
+    let (env, _admin, client) = setup();
+    let non_admin = Address::generate(&env);
+    client.set_max_fee(&non_admin, &1000000i128);
+}
+
+#[test]
+#[should_panic]
+fn test_set_max_fee_negative_panics() {
+    let (env, admin, client) = setup();
+    client.set_max_fee(&admin, &-100i128);
+}
+
+#[test]
+#[should_panic]
+fn test_set_max_fee_less_than_min_fee_panics() {
+    let (env, admin, client) = setup();
+    
+    // Set min fee first
+    client.set_min_fee(&admin, &1000i128);
+    
+    // Try to set max fee less than min fee
+    client.set_max_fee(&admin, &500i128);
+}
+
+#[test]
+fn test_set_max_fee_greater_than_min_fee() {
+    let (env, admin, client) = setup();
+    
+    // Set min fee first
+    client.set_min_fee(&admin, &1000i128);
+    
+    // Set max fee greater than min fee
+    client.set_max_fee(&admin, &5000i128);
+    assert_eq!(client.get_max_fee(), 5000);
+}
+
+#[test]
+fn test_get_max_fee_default() {
+    let (_env, _admin, client) = setup();
+    
+    // Should return default max fee (1,000,000)
+    assert_eq!(client.get_max_fee(), 1000000);
+}
+
+#[test]
+fn test_reset_fee_config_includes_max_fee() {
+    let (env, admin, client) = setup();
+    
+    // Change all fee configs
+    client.set_fee_bps(&admin, &1000u32);
+    client.set_min_fee(&admin, &100i128);
+    client.set_max_fee(&admin, &2000000i128);
+    
+    // Verify changes
+    assert_eq!(client.get_fee_bps(), 1000);
+    assert_eq!(client.get_min_fee(), 100);
+    assert_eq!(client.get_max_fee(), 2000000);
+    
+    // Reset config
+    client.reset_fee_config(&admin);
+    
+    // Verify all defaults restored
+    assert_eq!(client.get_fee_bps(), 500);
+    assert_eq!(client.get_min_fee(), 0);
+    assert_eq!(client.get_max_fee(), 1000000);
+}
+
+#[test]
+fn test_has_fee_config_after_initialization() {
+    let (_env, _admin, client) = setup();
+    
+    // Should have fee config after initialization
+    assert!(client.has_fee_config());
+}
+
+#[test]
+fn test_has_fee_config_false_before_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(FeeContract, ());
+    let client = FeeContractClient::new(&env, &contract_id);
+    
+    // Should not have fee config before initialization
+    assert!(!client.has_fee_config());
+}
+
+#[test]
+fn test_validate_max_fee_valid() {
+    use crate::validation::validate_max_fee;
+    
+    // Valid values
+    assert!(validate_max_fee(1000, 0).is_ok());
+    assert!(validate_max_fee(1000, 500).is_ok());
+    assert!(validate_max_fee(1000000, 999999).is_ok());
+}
+
+#[test]
+fn test_validate_max_fee_invalid() {
+    use crate::validation::validate_max_fee;
+    use crate::FeeContractError;
+    
+    // Invalid values
+    assert_eq!(validate_max_fee(-1, 0), Err(FeeContractError::InvalidConfig));
+    assert_eq!(validate_max_fee(500, 1000), Err(FeeContractError::InvalidConfig)); // max < min
+    assert_eq!(validate_max_fee(0, 100), Err(FeeContractError::InvalidConfig)); // max < min
+}

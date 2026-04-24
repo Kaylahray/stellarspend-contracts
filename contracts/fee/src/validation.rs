@@ -55,3 +55,27 @@ pub fn validate_min_fee(min_fee: i128) -> Result<(), FeeContractError> {
         Ok(())
     }
 }
+
+/// Validate maximum fee is non-negative and greater than or equal to min fee.
+/// Panics with InvalidConfig on failure. Returns true on success.
+pub fn validate_max_fee_or_panic(env: &Env, max_fee: i128, min_fee: i128) -> bool {
+    if max_fee < 0 {
+        panic_with_error!(env, FeeContractError::InvalidConfig);
+    }
+    if max_fee < min_fee {
+        panic_with_error!(env, FeeContractError::InvalidConfig);
+    }
+    true
+}
+
+/// Validate maximum fee without panicking.
+/// Returns Ok(()) if valid, or Err(FeeContractError::InvalidConfig) if invalid.
+pub fn validate_max_fee(max_fee: i128, min_fee: i128) -> Result<(), FeeContractError> {
+    if max_fee < 0 {
+        Err(FeeContractError::InvalidConfig)
+    } else if max_fee < min_fee {
+        Err(FeeContractError::InvalidConfig)
+    } else {
+        Ok(())
+    }
+}

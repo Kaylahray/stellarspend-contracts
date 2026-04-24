@@ -9,6 +9,9 @@ pub const DEFAULT_FEE_BPS: u32 = 500;
 /// Default minimum fee (0)
 pub const DEFAULT_MIN_FEE: i128 = 0;
 
+/// Default maximum fee (1,000,000)
+pub const DEFAULT_MAX_FEE: i128 = 1_000_000;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
 pub struct BatchFeeResult {
@@ -26,6 +29,7 @@ pub enum DataKey {
     Treasury,
     FeeBps,
     MinFee,
+    MaxFee,
     IsLocked,
     CurrentCycle,
     EscrowBalance,
@@ -91,6 +95,14 @@ pub fn write_min_fee(env: &Env, min_fee: i128) {
 
 pub fn read_min_fee(env: &Env) -> i128 {
     env.storage().instance().get(&DataKey::MinFee).unwrap_or(0)
+}
+
+pub fn write_max_fee(env: &Env, max_fee: i128) {
+    env.storage().instance().set(&DataKey::MaxFee, &max_fee);
+}
+
+pub fn read_max_fee(env: &Env) -> i128 {
+    env.storage().instance().get(&DataKey::MaxFee).unwrap_or(DEFAULT_MAX_FEE)
 }
 
 pub fn write_locked(env: &Env, is_locked: bool) {
@@ -254,4 +266,9 @@ pub fn remove_user_tier(env: &Env, user: &Address) {
     env.storage()
         .persistent()
         .remove(&DataKey::UserTier(user.clone()));
+}
+
+/// Check if fee configuration exists (has admin and fee_bps set)
+pub fn has_fee_config(env: &Env) -> bool {
+    has_admin(env) && env.storage().instance().has(&DataKey::FeeBps)
 }

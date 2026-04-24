@@ -19,17 +19,17 @@ use crate::escrow::{
 };
 use crate::reconciliation::reconcile;
 pub use crate::reconciliation::ReconciliationResult;
-use crate::events::TierEvents;
+use crate::events::{TierEvents, FeeConfigEvents};
 use crate::storage::{
     has_admin, read_admin, read_current_cycle, read_escrow_balance, read_fee_bps, read_last_active,
-    read_locked, read_min_fee, read_pending_fees, read_token, read_total_batch_calls,
+    read_locked, read_min_fee, read_max_fee, read_pending_fees, read_token, read_total_batch_calls,
     read_total_collected, read_total_released, read_treasury, write_admin, write_current_cycle,
-    write_fee_bps, write_last_active, write_locked, write_min_fee, write_token, write_treasury,
-    is_valid_tier, read_user_tier, remove_user_tier, write_user_tier,
-    DEFAULT_FEE_BPS, DEFAULT_MIN_FEE,
+    write_fee_bps, write_last_active, write_locked, write_min_fee, write_max_fee, write_token, write_treasury,
+    is_valid_tier, read_user_tier, remove_user_tier, write_user_tier, has_fee_config,
+    DEFAULT_FEE_BPS, DEFAULT_MIN_FEE, DEFAULT_MAX_FEE,
 };
 pub use crate::storage::{BatchFeeResult, DataKey, MAX_BATCH_SIZE, MAX_FEE_BPS};
-use crate::validation::{validate_fee_bps_or_panic, validate_min_fee_or_panic};
+use crate::validation::{validate_fee_bps_or_panic, validate_min_fee_or_panic, validate_max_fee_or_panic};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -262,6 +262,7 @@ impl FeeContract {
 
         write_fee_bps(&env, fee_bps);
         FeeEvents::fee_bps_updated(&env, fee_bps);
+        FeeConfigEvents::fee_config_updated(&env, &admin, Some(fee_bps), None, None);
     }
 
     pub fn set_treasury(env: Env, admin: Address, treasury: Address) {
@@ -282,12 +283,26 @@ impl FeeContract {
 
         write_min_fee(&env, min_fee);
         FeeEvents::min_fee_updated(&env, min_fee);
+        FeeConfigEvents::fee_config_updated(&env, &admin, None, Some(min_fee), None);
+    }
+
+    pub fn set_max_fee(env: Env, admin: Address, max_fee: i128) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        Self::require_unlocked(&env);
+
+        let min_fee = read_min_fee(&env);
+        validate_max_fee_or_panic(&env, max_fee, min_fee);
+
+        write_max_fee(&env, max_fee);
+        FeeConfigEvents::fee_config_updated(&env, &admin, None, None, Some(max_fee));
     }
 
     /// Resets fee configuration to default values. Admin-only.
     /// Restores:
     /// - fee_bps to DEFAULT_FEE_BPS (500 = 5%)
     /// - min_fee to DEFAULT_MIN_FEE (0)
+    /// - max_fee to DEFAULT_MAX_FEE (1,000,000)
     /// Emits a fee_config_reset event.
     pub fn reset_fee_config(env: Env, admin: Address) {
         admin.require_auth();
@@ -296,8 +311,10 @@ impl FeeContract {
 
         write_fee_bps(&env, DEFAULT_FEE_BPS);
         write_min_fee(&env, DEFAULT_MIN_FEE);
+        write_max_fee(&env, DEFAULT_MAX_FEE);
         
         TierEvents::fee_config_reset(&env, &admin);
+        FeeConfigEvents::fee_config_updated(&env, &admin, Some(DEFAULT_FEE_BPS), Some(DEFAULT_MIN_FEE), Some(DEFAULT_MAX_FEE));
     }
 
     pub fn get_admin(env: Env) -> Address {
@@ -318,6 +335,10 @@ impl FeeContract {
 
     pub fn get_min_fee(env: Env) -> i128 {
         read_min_fee(&env)
+    }
+
+    pub fn get_max_fee(env: Env) -> i128 {
+        read_max_fee(&env)
     }
 
     pub fn is_locked(env: Env) -> bool {
@@ -458,6 +479,10 @@ impl FeeContract {
     /// Returns the tier assigned to a user, or `None` if no tier is set.
     pub fn get_user_tier(env: Env, user: Address) -> Option<Symbol> {
         read_user_tier(&env, &user)
+    }
+
+    pub fn has_fee_config(env: Env) -> bool {
+        has_fee_config(&env)
     }
 
     fn require_admin(env: &Env, caller: &Address) {
