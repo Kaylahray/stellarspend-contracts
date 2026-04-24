@@ -1,35 +1,41 @@
 #![no_std]
 
+extern crate alloc;
+
 mod decay;
 mod escrow;
-mod reconciliation;
 mod events;
+mod reconciliation;
 mod storage;
-mod validation;
 mod utils;
+mod validation;
 
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, symbol_short, Address, Env, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, panic_with_error, symbol_short, Address, Env, Symbol, Vec,
+};
 
 use crate::decay::calculate_fee_decay;
 use crate::escrow::{
     collect_batch_to_escrow, collect_to_escrow, release_cycle_fees, rollover_cycle_fees,
 };
+use crate::events::{ConfigEvents, TierEvents};
 use crate::reconciliation::reconcile;
 pub use crate::reconciliation::ReconciliationResult;
-use crate::events::TierEvents;
 use crate::storage::{
-    has_admin, read_admin, read_current_cycle, read_escrow_balance, read_fee_bps, read_last_active,
-    read_locked, read_min_fee, read_pending_fees, read_token, read_total_batch_calls,
-    read_total_collected, read_total_released, read_treasury, write_admin, write_current_cycle,
-    write_fee_bps, write_last_active, write_locked, write_min_fee, write_token, write_treasury,
-    is_valid_tier, read_user_tier, remove_user_tier, write_user_tier,
+    has_admin, is_valid_tier, read_admin, read_current_cycle, read_escrow_balance, read_fee_bps,
+    read_last_active, read_locked, read_min_fee, read_pending_fees, read_token,
+    read_total_batch_calls, read_total_collected, read_total_released, read_treasury,
+    read_user_tier, remove_user_tier, write_admin, write_current_cycle, write_fee_bps,
+    write_last_active, write_locked, write_min_fee, write_token, write_treasury, write_user_tier,
     DEFAULT_FEE_BPS, DEFAULT_MIN_FEE,
 };
 pub use crate::storage::{BatchFeeResult, DataKey, MAX_BATCH_SIZE, MAX_FEE_BPS};
+use crate::utils::format_amount;
 use crate::validation::{validate_fee_bps_or_panic, validate_min_fee_or_panic};
+use shared::utils::validate_amount as validate_non_negative_amount;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -109,8 +115,14 @@ impl FeeEvents {
 
     pub fn min_fee_updated(env: &Env, min_fee: i128) {
         let topics = (symbol_short!("fee"), symbol_short!("config"));
-        env.events()
-            .publish(topics, (symbol_short!("min_fee"), min_fee));
+        env.events().publish(
+            topics,
+            (
+                symbol_short!("min_fee"),
+                min_fee,
+                format_amount(env, min_fee),
+            ),
+        );
     }
 
     pub fn fee_reconciled(env: &Env, stored: i128, calculated: i128) {
@@ -158,15 +170,15 @@ impl FeeContract {
 
     pub fn collect_fee(env: Env, payer: Address, amount: i128) -> i128 {
         payer.require_auth();
-        
+
         let last_active = read_last_active(&env, &payer);
         let current_time = env.ledger().timestamp();
         let decayed_amount = calculate_fee_decay(&env, amount, last_active, current_time);
 
         let pending = collect_to_escrow(&env, &payer, decayed_amount);
-        
+
         write_last_active(&env, &payer, current_time);
-        
+
         FeeEvents::fee_escrowed(&env, &payer, decayed_amount, read_current_cycle(&env));
         pending
     }
@@ -191,7 +203,7 @@ impl FeeContract {
         }
 
         let result = collect_batch_to_escrow(&env, &payer, &decayed_amounts);
-        
+
         write_last_active(&env, &payer, current_time);
 
         FeeEvents::fee_batched(
@@ -288,7 +300,7 @@ impl FeeContract {
     /// Restores:
     /// - fee_bps to DEFAULT_FEE_BPS (500 = 5%)
     /// - min_fee to DEFAULT_MIN_FEE (0)
-    /// Emits a fee_config_reset event.
+    /// Emits a reset event with the restored default values.
     pub fn reset_fee_config(env: Env, admin: Address) {
         admin.require_auth();
         Self::require_admin(&env, &admin);
@@ -296,8 +308,8 @@ impl FeeContract {
 
         write_fee_bps(&env, DEFAULT_FEE_BPS);
         write_min_fee(&env, DEFAULT_MIN_FEE);
-        
-        TierEvents::fee_config_reset(&env, &admin);
+
+        ConfigEvents::fee_reset(&env, &admin);
     }
 
     pub fn get_admin(env: Env) -> Address {
@@ -378,7 +390,7 @@ impl FeeContract {
         let min_fee = read_min_fee(&env);
         let mut total: i128 = 0;
         for amount in amounts.iter() {
-            if amount <= 0 {
+            if validate_non_negative_amount(amount).is_err() || amount == 0 {
                 panic_with_error!(&env, FeeContractError::InvalidAmount);
             }
             if amount < min_fee {

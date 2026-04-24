@@ -1,8 +1,15 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env, Symbol};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, Env, IntoVal, String, Symbol,
+};
 
-use crate::{FeeContract, FeeContractClient};
+use crate::{
+    events::FeeResetEventData,
+    storage::{DEFAULT_FEE_BPS, DEFAULT_MIN_FEE},
+    FeeContract, FeeContractClient,
+};
 
 fn setup() -> (Env, Address, FeeContractClient<'static>) {
     let env = Env::default();
@@ -123,21 +130,49 @@ fn test_get_fee_balance_returns_zero_initially() {
 #[test]
 fn test_reset_fee_config_restores_defaults() {
     let (env, admin, client) = setup();
-    
+
     // Change the config first
     client.set_fee_bps(&admin, &1000u32);
     client.set_min_fee(&admin, &100i128);
-    
+
     // Verify changes
     assert_eq!(client.get_fee_bps(), 1000);
     assert_eq!(client.get_min_fee(), 100);
-    
+
     // Reset config
     client.reset_fee_config(&admin);
-    
+
     // Verify defaults restored (DEFAULT_FEE_BPS = 500, DEFAULT_MIN_FEE = 0)
     assert_eq!(client.get_fee_bps(), 500);
     assert_eq!(client.get_min_fee(), 0);
+}
+
+#[test]
+fn test_reset_fee_config_emits_event_with_restored_values() {
+    let (env, admin, client) = setup();
+
+    client.set_fee_bps(&admin, &1000u32);
+    client.set_min_fee(&admin, &75i128);
+    let _ = env.events().all();
+
+    client.reset_fee_config(&admin);
+
+    let events = env.events().all();
+    let (_, topics, data) = events.last().unwrap();
+    assert_eq!(
+        topics,
+        soroban_sdk::vec![
+            &env,
+            Symbol::new(&env, "fee").into_val(&env),
+            Symbol::new(&env, "reset").into_val(&env)
+        ]
+    );
+
+    let payload: FeeResetEventData = data.into_val(&env);
+    assert_eq!(payload.admin, admin);
+    assert_eq!(payload.fee_bps, DEFAULT_FEE_BPS);
+    assert_eq!(payload.min_fee, DEFAULT_MIN_FEE);
+    assert_eq!(payload.formatted_min_fee, String::from_str(&env, "0"));
 }
 
 #[test]
@@ -151,7 +186,7 @@ fn test_reset_fee_config_unauthorized_panics() {
 #[test]
 fn test_validate_fee_bps_valid() {
     use crate::validation::validate_fee_bps;
-    
+
     // Valid values
     assert!(validate_fee_bps(0).is_ok());
     assert!(validate_fee_bps(500).is_ok());
@@ -162,16 +197,22 @@ fn test_validate_fee_bps_valid() {
 fn test_validate_fee_bps_invalid() {
     use crate::validation::validate_fee_bps;
     use crate::FeeContractError;
-    
+
     // Invalid value (> 10000)
-    assert_eq!(validate_fee_bps(10001), Err(FeeContractError::InvalidConfig));
-    assert_eq!(validate_fee_bps(99999), Err(FeeContractError::InvalidConfig));
+    assert_eq!(
+        validate_fee_bps(10001),
+        Err(FeeContractError::InvalidConfig)
+    );
+    assert_eq!(
+        validate_fee_bps(99999),
+        Err(FeeContractError::InvalidConfig)
+    );
 }
 
 #[test]
 fn test_validate_min_fee_valid() {
     use crate::validation::validate_min_fee;
-    
+
     // Valid values
     assert!(validate_min_fee(0).is_ok());
     assert!(validate_min_fee(100).is_ok());
@@ -182,8 +223,11 @@ fn test_validate_min_fee_valid() {
 fn test_validate_min_fee_invalid() {
     use crate::validation::validate_min_fee;
     use crate::FeeContractError;
-    
+
     // Invalid value (< 0)
     assert_eq!(validate_min_fee(-1), Err(FeeContractError::InvalidConfig));
-    assert_eq!(validate_min_fee(-1000), Err(FeeContractError::InvalidConfig));
+    assert_eq!(
+        validate_min_fee(-1000),
+        Err(FeeContractError::InvalidConfig)
+    );
 }

@@ -1,3 +1,6 @@
+use alloc::format;
+use soroban_sdk::{Env, String};
+
 /// Utility functions for fee calculations with consistent rounding behavior.
 
 /// Round up division for i128 values.
@@ -26,7 +29,7 @@ pub fn calculate_fee_round_up(amount: i128, fee_bps: u32) -> i128 {
     if amount <= 0 || fee_bps == 0 {
         return 0;
     }
-    
+
     let numerator = amount * fee_bps as i128;
     round_up_div(numerator, 10_000)
 }
@@ -37,14 +40,21 @@ pub fn calculate_fee_round_down(amount: i128, fee_bps: u32) -> i128 {
     if amount <= 0 || fee_bps == 0 {
         return 0;
     }
-    
+
     let numerator = amount * fee_bps as i128;
     round_down_div(numerator, 10_000)
+}
+
+/// Format an amount into a canonical decimal string.
+pub fn format_amount(env: &Env, amount: i128) -> String {
+    let formatted = format!("{amount}");
+    String::from_str(env, formatted.as_str())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soroban_sdk::{Env, String};
 
     #[test]
     fn test_round_up_div_basic() {
@@ -76,13 +86,13 @@ mod tests {
     fn test_calculate_fee_round_up() {
         // 1000 * 500 bps / 10000 = 50
         assert_eq!(calculate_fee_round_up(1000, 500), 50);
-        
+
         // 100 * 500 bps / 10000 = 5
         assert_eq!(calculate_fee_round_up(100, 500), 5);
-        
+
         // 1 * 500 bps / 10000 = 0.05, rounds up to 1
         assert_eq!(calculate_fee_round_up(1, 500), 1);
-        
+
         // 99 * 500 bps / 10000 = 4.95, rounds up to 5
         assert_eq!(calculate_fee_round_up(99, 500), 5);
     }
@@ -91,13 +101,13 @@ mod tests {
     fn test_calculate_fee_round_down() {
         // 1000 * 500 bps / 10000 = 50
         assert_eq!(calculate_fee_round_down(1000, 500), 50);
-        
+
         // 100 * 500 bps / 10000 = 5
         assert_eq!(calculate_fee_round_down(100, 500), 5);
-        
+
         // 1 * 500 bps / 10000 = 0.05, rounds down to 0
         assert_eq!(calculate_fee_round_down(1, 500), 0);
-        
+
         // 99 * 500 bps / 10000 = 4.95, rounds down to 4
         assert_eq!(calculate_fee_round_down(99, 500), 4);
     }
@@ -125,5 +135,14 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_format_amount_outputs_plain_decimal_strings() {
+        let env = Env::default();
+
+        assert_eq!(format_amount(&env, 0), String::from_str(&env, "0"));
+        assert_eq!(format_amount(&env, 25), String::from_str(&env, "25"));
+        assert_eq!(format_amount(&env, -25), String::from_str(&env, "-25"));
     }
 }
