@@ -314,6 +314,12 @@ impl FeeContract {
         read_escrow_balance(&env)
     }
 
+    /// Returns the current total fee balance stored in the contract.
+    /// This is an alias for get_escrow_balance() for clarity.
+    pub fn get_fee_balance(env: Env) -> i128 {
+        read_escrow_balance(&env)
+    }
+
     pub fn get_pending_fees(env: Env, cycle: u64) -> i128 {
         read_pending_fees(&env, cycle)
     }
@@ -407,6 +413,7 @@ impl FeeContract {
     /// status without requiring admin privileges or emitting events.
     pub fn get_reconciliation_status(env: Env) -> ReconciliationResult {
         reconcile(&env)
+    }
     /// Assigns a fee tier to a user. Admin-only.
     /// Valid tiers: `bronze`, `silver`, `gold`, `platinum`.
     pub fn set_user_tier(env: Env, admin: Address, user: Address, tier: Symbol) {

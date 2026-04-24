@@ -112,3 +112,10 @@ fn test_tier_can_be_overwritten() {
         Symbol::new(&env, "gold")
     );
 }
+
+#[test]
+fn test_get_fee_balance_returns_zero_initially() {
+    let (_env, _admin, client) = setup();
+    // Initially, fee balance should be zero
+    assert_eq!(client.get_fee_balance(), 0);
+}
