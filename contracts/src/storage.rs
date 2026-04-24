@@ -89,3 +89,26 @@ pub fn get_fee_logs(env: &Env, start: u64, end: u64) -> Vec<FeeLog> {
 
     logs
 }
+
+#[derive(Clone)]
+#[contracttype]
+pub fn set_user_fee_override(env: &Env, user: Address, fee_bps: u32) {
+    // safety guard
+    assert!(fee_bps <= 10_000, "invalid fee");
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserFeeOverride(user), &fee_bps);
+}
+
+pub fn get_user_fee_override(env: &Env, user: Address) -> Option<u32> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserFeeOverride(user))
+}
+
+pub fn remove_user_fee_override(env: &Env, user: Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::UserFeeOverride(user));
+}

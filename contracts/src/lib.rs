@@ -45,3 +45,35 @@ mod contract_metrics_tests {
         assert_eq!(m1.total_fees_collected, 50);
     }
 }
+pub fn admin_set_user_fee_override(
+    env: Env,
+    admin: Address,
+    user: Address,
+    fee_bps: u32,
+) {
+    require_admin(&env, &admin);
+    admin.require_auth();
+
+    storage::set_user_fee_override(&env, user.clone(), fee_bps);
+
+    env.events().publish(
+        ("fee_override_set", user),
+        fee_bps,
+    );
+}
+
+pub fn admin_remove_user_fee_override(
+    env: Env,
+    admin: Address,
+    user: Address,
+) {
+    require_admin(&env, &admin);
+    admin.require_auth();
+
+    storage::remove_user_fee_override(&env, user.clone());
+
+    env.events().publish(
+        ("fee_override_removed", user),
+        (),
+    );
+}
