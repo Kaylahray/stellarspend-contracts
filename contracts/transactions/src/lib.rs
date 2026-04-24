@@ -9,7 +9,7 @@ mod storage;
 
 pub use storage::{
     create_transaction, get_transaction, get_transaction_timestamp, get_user_transactions,
-    clear_user_transactions, transaction_exists, Transaction,
+    clear_user_transactions, transaction_exists, get_last_transaction, get_total_transactions_count, Transaction,
 };
 
 #[contracterror]
@@ -107,6 +107,16 @@ impl TransactionsContract {
     /// Get all transactions for a user
     pub fn get_user_transactions(env: Env, user: Address) -> Vec<Transaction> {
         get_user_transactions(&env, user)
+    }
+    
+    /// Get the last (most recent) transaction for a user
+    pub fn get_last_transaction(env: Env, user: Address) -> Option<Transaction> {
+        get_last_transaction(&env, user)
+    }
+    
+    /// Get the total number of transactions recorded in the contract
+    pub fn get_total_transactions_count(env: Env) -> u64 {
+        get_total_transactions_count(&env)
     }
     
     /// Clear all transactions for a user (only user can perform this action)
