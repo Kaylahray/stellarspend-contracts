@@ -222,6 +222,22 @@ impl FeeContract {
         FeeEvents::min_fee_updated(&env, min_fee);
     }
 
+    /// Resets fee configuration to default values. Admin-only.
+    /// Restores:
+    /// - fee_bps to DEFAULT_FEE_BPS (500 = 5%)
+    /// - min_fee to DEFAULT_MIN_FEE (0)
+    /// Emits a fee_config_reset event.
+    pub fn reset_fee_config(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        Self::require_unlocked(&env);
+
+        write_fee_bps(&env, DEFAULT_FEE_BPS);
+        write_min_fee(&env, DEFAULT_MIN_FEE);
+        
+        TierEvents::fee_config_reset(&env, &admin);
+    }
+
     pub fn get_admin(env: Env) -> Address {
         read_admin(&env)
     }
@@ -251,6 +267,12 @@ impl FeeContract {
     }
 
     pub fn get_escrow_balance(env: Env) -> i128 {
+        read_escrow_balance(&env)
+    }
+
+    /// Returns the current total fee balance stored in the contract.
+    /// This is an alias for get_escrow_balance() for clarity.
+    pub fn get_fee_balance(env: Env) -> i128 {
         read_escrow_balance(&env)
     }
 
