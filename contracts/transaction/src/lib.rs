@@ -47,4 +47,8 @@ impl TransactionContract {
         let count_key = format!("count:{}", user);
         env.storage().get(&count_key).unwrap_or(0)
     }
+} /// Get transactions count by user
+pub fn get_transactions_count_by_user(env: Env, user: Address) -> i128 {
+    let count_key = format!("count:{}", user);
+    env.storage().get(&count_key).unwrap_or(0)
 }
