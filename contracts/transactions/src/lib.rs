@@ -129,7 +129,12 @@ impl TransactionsContract {
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Admin)
     }
-    
+
+    /// Check if a transaction exists
+    pub fn transaction_exists(env: Env, id: Symbol) -> bool {
+        transaction_exists(&env, id)
+    }
+
     fn require_admin(env: &Env, caller: &Address) {
         let admin: Address = env
             .storage()

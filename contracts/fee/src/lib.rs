@@ -33,10 +33,9 @@ use crate::storage::{
 };
 pub use crate::storage::{BatchFeeResult, DataKey, MAX_BATCH_SIZE, MAX_FEE_BPS};
 use crate::utils::format_amount;
-use crate::validation::{validate_fee_bps_or_panic, validate_min_fee_or_panic};
-use shared::utils::validate_amount as validate_non_negative_amount;
 use crate::auth::require_admin;
 use crate::utils::compute_fee;
+use crate::validation::{validate_fee_bps_or_panic, validate_min_fee_or_panic, validate_max_fee_or_panic, validate_amount_positive_or_panic};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -100,7 +99,9 @@ impl FeeContract {
     }
 
     pub fn collect_fee(env: Env, payer: Address, amount: i128) -> i128 {
+        Self::require_initialized(&env);
         payer.require_auth();
+        validate_amount_positive_or_panic(&env, amount);
 
         let last_active = read_last_active(&env, &payer);
         let current_time = env.ledger().timestamp();
@@ -116,6 +117,7 @@ impl FeeContract {
     }
 
     pub fn collect_fee_batch(env: Env, payer: Address, amounts: Vec<i128>) -> BatchFeeResult {
+        Self::require_initialized(&env);
         payer.require_auth();
 
         let batch_size = amounts.len();
@@ -132,6 +134,7 @@ impl FeeContract {
         let mut decayed_amounts = Vec::new(&env);
         let mut total_original_amount: i128 = 0;
         for amount in amounts.iter() {
+            validate_amount_positive_or_panic(&env, amount);
             total_original_amount = total_original_amount
                 .checked_add(amount)
                 .unwrap_or_else(|| panic_with_error!(&env, FeeContractError::Overflow));
@@ -154,11 +157,13 @@ impl FeeContract {
     }
 
     pub fn update_activity(env: Env, user: Address) {
+        Self::require_initialized(&env);
         user.require_auth();
         write_last_active(&env, &user, env.ledger().timestamp());
     }
 
     pub fn get_last_active(env: Env, user: Address) -> u64 {
+        Self::require_initialized(&env);
         read_last_active(&env, &user)
     }
 
@@ -257,14 +262,17 @@ impl FeeContract {
     }
 
     pub fn get_admin(env: Env) -> Address {
+        Self::require_initialized(&env);
         read_admin(&env)
     }
 
     pub fn get_token(env: Env) -> Address {
+        Self::require_initialized(&env);
         read_token(&env)
     }
 
     pub fn get_treasury(env: Env) -> Address {
+        Self::require_initialized(&env);
         read_treasury(&env)
     }
 
@@ -281,14 +289,17 @@ impl FeeContract {
     }
 
     pub fn is_locked(env: Env) -> bool {
+        Self::require_initialized(&env);
         read_locked(&env)
     }
 
     pub fn get_current_cycle(env: Env) -> u64 {
+        Self::require_initialized(&env);
         read_current_cycle(&env)
     }
 
     pub fn get_escrow_balance(env: Env) -> i128 {
+        Self::require_initialized(&env);
         read_escrow_balance(&env)
     }
 
@@ -299,19 +310,71 @@ impl FeeContract {
     }
 
     pub fn get_pending_fees(env: Env, cycle: u64) -> i128 {
+        Self::require_initialized(&env);
         read_pending_fees(&env, cycle)
     }
 
     pub fn get_total_collected(env: Env) -> i128 {
+        Self::require_initialized(&env);
         read_total_collected(&env)
     }
 
     pub fn get_total_released(env: Env) -> i128 {
+        Self::require_initialized(&env);
         read_total_released(&env)
     }
 
     pub fn get_total_batch_calls(env: Env) -> u64 {
+        Self::require_initialized(&env);
         read_total_batch_calls(&env)
     }
 
-    pub fn preview_batch_fee(env: Env
+    pub fn set_user_tier(env: Env, admin: Address, user: Address, tier: Symbol) {
+        require_admin(&env, &admin);
+        if !is_valid_tier(&env, &tier) {
+            panic_with_error!(&env, FeeContractError::InvalidTier);
+        }
+        write_user_tier(&env, &user, &tier);
+        TierEvents::tier_updated(&env, &user, &tier);
+    }
+
+    pub fn get_user_tier(env: Env, user: Address) -> Option<Symbol> {
+        Self::require_initialized(&env);
+        read_user_tier(&env, &user)
+    }
+
+    pub fn remove_user_tier(env: Env, admin: Address, user: Address) {
+        require_admin(&env, &admin);
+        remove_user_tier(&env, &user);
+        TierEvents::tier_removed(&env, &user);
+    }
+
+    pub fn calculate_fee_amount(env: Env, amount: i128, bps: u32) -> i128 {
+        compute_fee(amount, bps).unwrap_or_else(|| panic_with_error!(&env, FeeContractError::Overflow))
+    }
+
+    pub fn preview_batch_fee(env: Env, amounts: Vec<i128>) -> i128 {
+        Self::require_initialized(&env);
+        let mut total_fee: i128 = 0;
+        let fee_bps = read_fee_bps(&env);
+        for amount in amounts.iter() {
+            let fee = compute_fee(amount, fee_bps)
+                .unwrap_or_else(|| panic_with_error!(&env, FeeContractError::Overflow));
+            total_fee = total_fee.checked_add(fee)
+                .unwrap_or_else(|| panic_with_error!(&env, FeeContractError::Overflow));
+        }
+        total_fee
+    }
+
+    fn require_initialized(env: &Env) {
+        if !has_admin(env) {
+            panic_with_error!(env, FeeContractError::NotInitialized);
+        }
+    }
+
+    fn require_unlocked(env: &Env) {
+        if read_locked(env) {
+            panic_with_error!(env, FeeContractError::Locked);
+        }
+    }
+}

@@ -86,7 +86,7 @@ pub fn read_fee_bps(env: &Env) -> u32 {
     env.storage()
         .instance()
         .get(&DataKey::FeeBps)
-        .expect("Contract not initialized")
+        .unwrap_or(DEFAULT_FEE_BPS)
 }
 
 pub fn write_min_fee(env: &Env, min_fee: i128) {
@@ -94,7 +94,7 @@ pub fn write_min_fee(env: &Env, min_fee: i128) {
 }
 
 pub fn read_min_fee(env: &Env) -> i128 {
-    env.storage().instance().get(&DataKey::MinFee).unwrap_or(0)
+    env.storage().instance().get(&DataKey::MinFee).unwrap_or(DEFAULT_MIN_FEE)
 }
 
 pub fn write_max_fee(env: &Env, max_fee: i128) {

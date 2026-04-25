@@ -80,3 +80,21 @@ pub fn validate_max_fee(max_fee: i128, min_fee: i128) -> Result<(), FeeContractE
         Ok(())
     }
 }
+/// Validate that an amount is strictly positive (> 0).
+/// Panics with InvalidAmount on failure. Returns true on success.
+pub fn validate_amount_positive_or_panic(env: &Env, amount: i128) -> bool {
+    if amount <= 0 {
+        panic_with_error!(env, FeeContractError::InvalidAmount);
+    }
+    true
+}
+
+/// Validate that an amount is strictly positive without panicking.
+/// Returns Ok(()) if valid, or Err(FeeContractError::InvalidAmount) if invalid.
+pub fn validate_amount_positive(amount: i128) -> Result<(), FeeContractError> {
+    if amount <= 0 {
+        Err(FeeContractError::InvalidAmount)
+    } else {
+        Ok(())
+    }
+}

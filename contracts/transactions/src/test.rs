@@ -314,3 +314,32 @@ fn test_transaction_counter_increments() {
     assert!(TransactionsContract::get_transaction(env.clone(), tx2_id).is_some());
     assert!(TransactionsContract::get_transaction(env.clone(), tx3_id).is_some());
 }
+#[test]
+fn test_transaction_exists() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(TransactionsContract, ());
+    
+    TransactionsContract::initialize(env.clone(), admin.clone());
+    
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    let amount = 1000;
+    let note = String::from_str(&env, "Existence test");
+    
+    // Create transaction
+    let tx_id = TransactionsContract::create_transaction(
+        env.clone(),
+        from.clone(),
+        to.clone(),
+        amount,
+        note,
+    );
+    
+    // Verify existence
+    assert!(TransactionsContract::transaction_exists(env.clone(), tx_id.clone()));
+    
+    // Test non-existent transaction
+    let fake_id = Symbol::new(&env, "not_here");
+    assert!(!TransactionsContract::transaction_exists(env.clone(), fake_id));
+}
