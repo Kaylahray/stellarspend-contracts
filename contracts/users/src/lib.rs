@@ -102,3 +102,67 @@ impl UsersContract {
         }
     }
 }
+
+// ── Issue #336: check_user_exists ────────────────────────────────────────────
+//
+// Tests are inline here (rather than in the sibling `test.rs` file) because
+// `test.rs` is currently not wired as a module from `lib.rs`. Wiring it up
+// surfaces several pre-existing compile errors in tests that have never run
+// (missing `Vec` import, `Option<Address>` vs `Address` mismatches, and
+// `std::panic::catch_unwind` calls that don't compile in this `no_std`
+// crate). Repairing those is out of scope for issue #336; tracking that as
+// a separate concern keeps this PR focused.
+#[cfg(test)]
+mod check_user_exists_tests {
+    use super::{UsersContract, UsersContractClient};
+    use soroban_sdk::{testutils::Address as _, Address, Env};
+
+    fn setup<'a>() -> (Env, Address, UsersContractClient<'a>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(UsersContract, ());
+        let client = UsersContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        (env, admin, client)
+    }
+
+    #[test]
+    fn returns_false_for_unregistered_user() {
+        let (env, _admin, client) = setup();
+        let stranger = Address::generate(&env);
+        assert!(!client.check_user_exists(&stranger));
+    }
+
+    #[test]
+    fn returns_true_after_registration() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+
+        // Before registration → false
+        assert!(!client.check_user_exists(&user));
+
+        // After registration → true
+        client.register_user(&user);
+        assert!(client.check_user_exists(&user));
+    }
+
+    #[test]
+    fn matches_is_user_registered_for_parity() {
+        // check_user_exists is a deliberate alias for is_user_registered.
+        // This test guards against future divergence between the two.
+        let (env, _admin, client) = setup();
+        let registered = Address::generate(&env);
+        let unregistered = Address::generate(&env);
+        client.register_user(&registered);
+
+        assert_eq!(
+            client.check_user_exists(&registered),
+            client.is_user_registered(&registered),
+        );
+        assert_eq!(
+            client.check_user_exists(&unregistered),
+            client.is_user_registered(&unregistered),
+        );
+    }
+}
