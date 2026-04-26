@@ -63,6 +63,38 @@ pub fn user_exists(env: &Env, user: Address) -> bool {
     users.contains_key(user)
 }
 
+/// Remove the user's registration and profile data
+pub fn reset_user_data(env: &Env, user: Address) -> bool {
+    let mut users: Map<Address, bool> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Users)
+        .unwrap_or_else(|| Map::new(env));
+
+    if !users.contains_key(user.clone()) {
+        return false;
+    }
+
+    users.remove(user.clone());
+    env.storage()
+        .persistent()
+        .set(&DataKey::Users, &users);
+
+    let mut count: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::UserCount)
+        .unwrap_or(0);
+    if count > 0 {
+        count -= 1;
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserCount, &count);
+
+    true
+}
+
 /// Get all unique users (for admin purposes)
 pub fn get_all_users(env: &Env) -> Vec<Address> {
     let users: Map<Address, bool> = env

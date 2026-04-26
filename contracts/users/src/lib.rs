@@ -7,7 +7,10 @@ use soroban_sdk::{
 
 mod storage;
 
-pub use storage::{add_user, get_user_count, user_exists, get_all_users};
+pub use storage::{add_user, get_user_count, user_exists, get_all_users, reset_user_data};
+
+#[cfg(test)]
+mod test;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -69,6 +72,14 @@ impl UsersContract {
     pub fn is_user_registered(env: Env, user: Address) -> bool {
         user_exists(&env, user)
     }
+
+    /// Verify user existence — returns `true` if the user has been registered,
+    /// `false` otherwise. Functionally identical to `is_user_registered`;
+    /// exposed under this name to satisfy the `check_user_exists` API surface
+    /// requested in issue #336.
+    pub fn check_user_exists(env: Env, user: Address) -> bool {
+        user_exists(&env, user)
+    }
     
     /// Get all registered users (admin only)
     pub fn get_all_users(env: Env, caller: Address) -> Vec<Address> {
@@ -78,6 +89,22 @@ impl UsersContract {
         get_all_users(&env)
     }
     
+    /// Reset the user's profile data (only the user may call)
+    pub fn reset_user_data(env: Env, user: Address) -> bool {
+        user.require_auth();
+
+        let success = reset_user_data(&env, user.clone());
+
+        if success {
+            env.events().publish(
+                (symbol_short!("users"), symbol_short!("reset")),
+                user,
+            );
+        }
+
+        success
+    }
+
     /// Get the admin address
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Admin)
@@ -92,5 +119,69 @@ impl UsersContract {
         if caller != &admin {
             panic_with_error!(env, UserError::Unauthorized);
         }
+    }
+}
+
+// ── Issue #336: check_user_exists ────────────────────────────────────────────
+//
+// Tests are inline here (rather than in the sibling `test.rs` file) because
+// `test.rs` is currently not wired as a module from `lib.rs`. Wiring it up
+// surfaces several pre-existing compile errors in tests that have never run
+// (missing `Vec` import, `Option<Address>` vs `Address` mismatches, and
+// `std::panic::catch_unwind` calls that don't compile in this `no_std`
+// crate). Repairing those is out of scope for issue #336; tracking that as
+// a separate concern keeps this PR focused.
+#[cfg(test)]
+mod check_user_exists_tests {
+    use super::{UsersContract, UsersContractClient};
+    use soroban_sdk::{testutils::Address as _, Address, Env};
+
+    fn setup<'a>() -> (Env, Address, UsersContractClient<'a>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(UsersContract, ());
+        let client = UsersContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        (env, admin, client)
+    }
+
+    #[test]
+    fn returns_false_for_unregistered_user() {
+        let (env, _admin, client) = setup();
+        let stranger = Address::generate(&env);
+        assert!(!client.check_user_exists(&stranger));
+    }
+
+    #[test]
+    fn returns_true_after_registration() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+
+        // Before registration → false
+        assert!(!client.check_user_exists(&user));
+
+        // After registration → true
+        client.register_user(&user);
+        assert!(client.check_user_exists(&user));
+    }
+
+    #[test]
+    fn matches_is_user_registered_for_parity() {
+        // check_user_exists is a deliberate alias for is_user_registered.
+        // This test guards against future divergence between the two.
+        let (env, _admin, client) = setup();
+        let registered = Address::generate(&env);
+        let unregistered = Address::generate(&env);
+        client.register_user(&registered);
+
+        assert_eq!(
+            client.check_user_exists(&registered),
+            client.is_user_registered(&registered),
+        );
+        assert_eq!(
+            client.check_user_exists(&unregistered),
+            client.is_user_registered(&unregistered),
+        );
     }
 }

@@ -1,26 +1,30 @@
-use soroban_sdk::{
-    testutils::Address as _, testutils::Bytes as _, Address, Env, Symbol, String,
+﻿use soroban_sdk::{
+    testutils::Address as _, Address, Env, Symbol, String, Vec,
 };
-use crate::{TransactionsContract, TransactionError, Transaction};
+use crate::{TransactionsContract, TransactionsContractClient, TransactionError, Transaction};
 
 #[test]
 fn test_initialize_and_get_admin() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let contract_id = env.register(TransactionsContract, ());
-    
-    // Test initialization
-    TransactionsContract::initialize(env.clone(), admin.clone());
-    
-    // Verify admin is set
-    assert_eq!(TransactionsContract::get_admin(env.clone()), Some(admin.clone()));
-    
-    // Test duplicate initialization fails
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+}
+
+#[test]
+#[should_panic]
+fn test_initialize_duplicate_fails() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(TransactionsContract, ());
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
     let admin2 = Address::generate(&env);
-    let result = std::panic::catch_unwind(|| {
-        TransactionsContract::initialize(env.clone(), admin2);
-    });
-    assert!(result.is_err());
+    client.initialize(&admin2);
 }
 
 #[test]
@@ -28,68 +32,66 @@ fn test_create_transaction() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let contract_id = env.register(TransactionsContract, ());
-    
-    TransactionsContract::initialize(env.clone(), admin.clone());
-    
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
     let from = Address::generate(&env);
     let to = Address::generate(&env);
-    let amount = 1000;
+    let amount: i128 = 1000;
     let note = String::from_str(&env, "Test transaction");
-    
-    // Create transaction
-    let tx_id = TransactionsContract::create_transaction(
-        env.clone(),
-        from.clone(),
-        to.clone(),
-        amount,
-        note.clone(),
-    );
-    
-    // Verify transaction was created
-    let transaction = TransactionsContract::get_transaction(env.clone(), tx_id.clone()).unwrap();
+    let mut tags = Vec::new(&env);
+    tags.push_back(String::from_str(&env, "groceries"));
+    tags.push_back(String::from_str(&env, "monthly"));
+
+    let tx_id = client.create_transaction(&from, &to, &amount, &note, &tags);
+
+    let transaction = client.get_transaction(&tx_id).unwrap();
     assert_eq!(transaction.id, tx_id);
     assert_eq!(transaction.from, from);
     assert_eq!(transaction.to, to);
     assert_eq!(transaction.amount, amount);
     assert_eq!(transaction.note, note);
+    assert_eq!(transaction.tags.len(), 2);
+    assert_eq!(transaction.tags.get(0), Some(String::from_str(&env, "groceries")));
+    assert_eq!(transaction.tags.get(1), Some(String::from_str(&env, "monthly")));
     assert!(transaction.timestamp > 0);
 }
 
 #[test]
-fn test_create_transaction_invalid_amount() {
+#[should_panic]
+fn test_create_transaction_invalid_amount_zero() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let contract_id = env.register(TransactionsContract, ());
-    
-    TransactionsContract::initialize(env.clone(), admin.clone());
-    
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
     let from = Address::generate(&env);
     let to = Address::generate(&env);
     let note = String::from_str(&env, "Invalid amount test");
-    
-    // Test zero amount fails
-    let result = std::panic::catch_unwind(|| {
-        TransactionsContract::create_transaction(
-            env.clone(),
-            from.clone(),
-            to.clone(),
-            0,
-            note.clone(),
-        );
-    });
-    assert!(result.is_err());
-    
-    // Test negative amount fails
-    let result = std::panic::catch_unwind(|| {
-        TransactionsContract::create_transaction(
-            env.clone(),
-            from.clone(),
-            to.clone(),
-            -100,
-            note.clone(),
-        );
-    });
-    assert!(result.is_err());
+    let zero_amount: i128 = 0;
+
+    client.create_transaction(&from, &to, &zero_amount, &note, &Vec::new(&env));
+}
+
+#[test]
+#[should_panic]
+fn test_create_transaction_invalid_amount_negative() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(TransactionsContract, ());
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    let note = String::from_str(&env, "Invalid amount test");
+    let negative_amount: i128 = -100;
+
+    client.create_transaction(&from, &to, &negative_amount, &note, &Vec::new(&env));
 }
 
 #[test]
@@ -97,42 +99,74 @@ fn test_update_transaction_note() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let contract_id = env.register(TransactionsContract, ());
-    
-    TransactionsContract::initialize(env.clone(), admin.clone());
-    
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
     let from = Address::generate(&env);
     let to = Address::generate(&env);
-    let amount = 1000;
+    let amount: i128 = 1000;
     let original_note = String::from_str(&env, "Original note");
     let updated_note = String::from_str(&env, "Updated note");
-    
-    // Create transaction
-    let tx_id = TransactionsContract::create_transaction(
-        env.clone(),
-        from.clone(),
-        to.clone(),
-        amount,
-        original_note.clone(),
-    );
-    
-    // Verify original note
-    let transaction = TransactionsContract::get_transaction(env.clone(), tx_id.clone()).unwrap();
+
+    let tx_id = client.create_transaction(&from, &to, &amount, &original_note, &Vec::new(&env));
+
+    let transaction = client.get_transaction(&tx_id).unwrap();
     assert_eq!(transaction.note, original_note);
-    
-    // Update note (this should work since the caller is the transaction owner)
-    let success = TransactionsContract::update_transaction_note(
-        env.clone(),
-        tx_id.clone(),
-        updated_note.clone(),
-    );
-    
-    // Note: In a real implementation, we'd need proper auth handling
-    // For this test, we'll verify the function exists and can be called
-    // The actual authorization would be handled by the Soroban runtime
-    
-    // Verify note was updated
-    let updated_transaction = TransactionsContract::get_transaction(env.clone(), tx_id.clone()).unwrap();
+
+    let success = client.update_transaction_note(&tx_id, &from, &updated_note);
+    assert!(success);
+
+    let updated_transaction = client.get_transaction(&tx_id).unwrap();
     assert_eq!(updated_transaction.note, updated_note);
+}
+
+#[test]
+fn test_update_transaction_amount() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(TransactionsContract, ());
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    let amount: i128 = 1000;
+    let updated_amount: i128 = 1500;
+    let note = String::from_str(&env, "Amount update");
+    let tags = Vec::new(&env);
+
+    let tx_id = client.create_transaction(&from, &to, &amount, &note, &tags);
+
+    let success = client.update_transaction_amount(&tx_id, &from, &updated_amount);
+    assert!(success);
+
+    let transaction = client.get_transaction(&tx_id).unwrap();
+    assert_eq!(transaction.amount, updated_amount);
+}
+
+#[test]
+#[should_panic]
+fn test_transaction_limit_per_user() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(TransactionsContract, ());
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    let note = String::from_str(&env, "Limit test");
+    let one: i128 = 1;
+
+    for _ in 0..1000 {
+        let tags = Vec::new(&env);
+        client.create_transaction(&from, &to, &one, &note, &tags);
+    }
+
+    client.create_transaction(&from, &to, &one, &note, &Vec::new(&env));
 }
 
 #[test]
@@ -140,31 +174,23 @@ fn test_get_transaction_timestamp() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let contract_id = env.register(TransactionsContract, ());
-    
-    TransactionsContract::initialize(env.clone(), admin.clone());
-    
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
     let from = Address::generate(&env);
     let to = Address::generate(&env);
-    let amount = 1000;
+    let amount: i128 = 1000;
     let note = String::from_str(&env, "Timestamp test");
-    
-    // Create transaction
-    let tx_id = TransactionsContract::create_transaction(
-        env.clone(),
-        from.clone(),
-        to.clone(),
-        amount,
-        note.clone(),
-    );
-    
-    // Get timestamp
-    let timestamp = TransactionsContract::get_transaction_timestamp(env.clone(), tx_id.clone());
+
+    let tx_id = client.create_transaction(&from, &to, &amount, &note, &Vec::new(&env));
+
+    let timestamp = client.get_transaction_timestamp(&tx_id);
     assert!(timestamp.is_some());
     assert!(timestamp.unwrap() > 0);
-    
-    // Test non-existent transaction
+
     let fake_id = Symbol::new(&env, "fake_id");
-    let fake_timestamp = TransactionsContract::get_transaction_timestamp(env.clone(), fake_id);
+    let fake_timestamp = client.get_transaction_timestamp(&fake_id);
     assert!(fake_timestamp.is_none());
 }
 
@@ -173,50 +199,26 @@ fn test_get_user_transactions() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let contract_id = env.register(TransactionsContract, ());
-    
-    TransactionsContract::initialize(env.clone(), admin.clone());
-    
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
     let user1 = Address::generate(&env);
     let user2 = Address::generate(&env);
     let recipient = Address::generate(&env);
-    
-    // Create transactions for user1
-    let tx1_id = TransactionsContract::create_transaction(
-        env.clone(),
-        user1.clone(),
-        recipient.clone(),
-        1000,
-        String::from_str(&env, "User1 transaction 1"),
-    );
-    
-    let tx2_id = TransactionsContract::create_transaction(
-        env.clone(),
-        user1.clone(),
-        recipient.clone(),
-        2000,
-        String::from_str(&env, "User1 transaction 2"),
-    );
-    
-    // Create transaction for user2
-    let tx3_id = TransactionsContract::create_transaction(
-        env.clone(),
-        user2.clone(),
-        recipient.clone(),
-        3000,
-        String::from_str(&env, "User2 transaction"),
-    );
-    
-    // Get user1's transactions
-    let user1_txs = TransactionsContract::get_user_transactions(env.clone(), user1.clone());
+
+    let tx1_id = client.create_transaction(&user1, &recipient, &1000, &String::from_str(&env, "User1 transaction 1"), &Vec::new(&env));
+    let tx2_id = client.create_transaction(&user1, &recipient, &2000, &String::from_str(&env, "User1 transaction 2"), &Vec::new(&env));
+    let tx3_id = client.create_transaction(&user2, &recipient, &3000, &String::from_str(&env, "User2 transaction"), &Vec::new(&env));
+
+    let user1_txs = client.get_user_transactions(&user1);
     assert_eq!(user1_txs.len(), 2);
-    
-    // Get user2's transactions
-    let user2_txs = TransactionsContract::get_user_transactions(env.clone(), user2.clone());
+
+    let user2_txs = client.get_user_transactions(&user2);
     assert_eq!(user2_txs.len(), 1);
-    
-    // Get transactions for non-existent user
+
     let non_existent_user = Address::generate(&env);
-    let empty_txs = TransactionsContract::get_user_transactions(env.clone(), non_existent_user);
+    let empty_txs = client.get_user_transactions(&non_existent_user);
     assert_eq!(empty_txs.len(), 0);
 }
 
@@ -225,46 +227,28 @@ fn test_clear_user_transactions() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let contract_id = env.register(TransactionsContract, ());
-    
-    TransactionsContract::initialize(env.clone(), admin.clone());
-    
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
     let user = Address::generate(&env);
     let recipient = Address::generate(&env);
-    
-    // Create multiple transactions for the user
-    let tx1_id = TransactionsContract::create_transaction(
-        env.clone(),
-        user.clone(),
-        recipient.clone(),
-        1000,
-        String::from_str(&env, "Transaction 1"),
-    );
-    
-    let tx2_id = TransactionsContract::create_transaction(
-        env.clone(),
-        user.clone(),
-        recipient.clone(),
-        2000,
-        String::from_str(&env, "Transaction 2"),
-    );
-    
-    // Verify transactions exist
-    let user_txs = TransactionsContract::get_user_transactions(env.clone(), user.clone());
+
+    let tx1_id = client.create_transaction(&user, &recipient, &1000, &String::from_str(&env, "Transaction 1"), &Vec::new(&env));
+    let tx2_id = client.create_transaction(&user, &recipient, &2000, &String::from_str(&env, "Transaction 2"), &Vec::new(&env));
+
+    let user_txs = client.get_user_transactions(&user);
     assert_eq!(user_txs.len(), 2);
-    
-    // Clear user transactions
-    let success = TransactionsContract::clear_user_transactions(env.clone(), user.clone());
+
+    let success = client.clear_user_transactions(&user);
     assert!(success);
-    
-    // Verify transactions are cleared
-    let empty_txs = TransactionsContract::get_user_transactions(env.clone(), user.clone());
+
+    let empty_txs = client.get_user_transactions(&user);
     assert_eq!(empty_txs.len(), 0);
-    
-    // Verify individual transactions are removed
-    let tx1 = TransactionsContract::get_transaction(env.clone(), tx1_id);
+
+    let tx1 = client.get_transaction(&tx1_id);
     assert!(tx1.is_none());
-    
-    let tx2 = TransactionsContract::get_transaction(env.clone(), tx2_id);
+    let tx2 = client.get_transaction(&tx2_id);
     assert!(tx2.is_none());
 }
 
@@ -273,44 +257,44 @@ fn test_transaction_counter_increments() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let contract_id = env.register(TransactionsContract, ());
-    
-    TransactionsContract::initialize(env.clone(), admin.clone());
-    
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
     let from = Address::generate(&env);
     let to = Address::generate(&env);
-    
-    // Create multiple transactions
-    let tx1_id = TransactionsContract::create_transaction(
-        env.clone(),
-        from.clone(),
-        to.clone(),
-        1000,
-        String::from_str(&env, "Transaction 1"),
-    );
-    
-    let tx2_id = TransactionsContract::create_transaction(
-        env.clone(),
-        from.clone(),
-        to.clone(),
-        2000,
-        String::from_str(&env, "Transaction 2"),
-    );
-    
-    let tx3_id = TransactionsContract::create_transaction(
-        env.clone(),
-        from.clone(),
-        to.clone(),
-        3000,
-        String::from_str(&env, "Transaction 3"),
-    );
-    
-    // Verify IDs are different and sequential
+
+    let tx1_id = client.create_transaction(&from, &to, &1000, &String::from_str(&env, "Transaction 1"), &Vec::new(&env));
+    let tx2_id = client.create_transaction(&from, &to, &2000, &String::from_str(&env, "Transaction 2"), &Vec::new(&env));
+    let tx3_id = client.create_transaction(&from, &to, &3000, &String::from_str(&env, "Transaction 3"), &Vec::new(&env));
+
     assert_ne!(tx1_id, tx2_id);
     assert_ne!(tx2_id, tx3_id);
     assert_ne!(tx1_id, tx3_id);
-    
-    // Verify all transactions exist
-    assert!(TransactionsContract::get_transaction(env.clone(), tx1_id).is_some());
-    assert!(TransactionsContract::get_transaction(env.clone(), tx2_id).is_some());
-    assert!(TransactionsContract::get_transaction(env.clone(), tx3_id).is_some());
+
+    assert!(client.get_transaction(&tx1_id).is_some());
+    assert!(client.get_transaction(&tx2_id).is_some());
+    assert!(client.get_transaction(&tx3_id).is_some());
+}
+
+#[test]
+fn test_transaction_exists() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(TransactionsContract, ());
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    let amount: i128 = 1000;
+    let note = String::from_str(&env, "Existence test");
+
+    let tx_id = client.create_transaction(&from, &to, &amount, &note, &Vec::new(&env));
+
+    assert!(client.transaction_exists(&tx_id));
+
+    let fake_id = Symbol::new(&env, "not_here");
+    assert!(!client.transaction_exists(&fake_id));
 }

@@ -1,4 +1,7 @@
-use soroban_sdk::{contracttype, Address, Env, Vec, Symbol, String};
+use soroban_sdk::{contracttype, Address, Env, Vec, Symbol, String, panic_with_error};
+use crate::TransactionError;
+
+pub const MAX_TRANSACTIONS_PER_USER: u32 = 1000;
 
 #[derive(Clone)]
 #[contracttype]
@@ -8,6 +11,7 @@ pub struct Transaction {
     pub to: Address,
     pub amount: i128,
     pub note: String,
+    pub tags: Vec<String>,
     pub timestamp: u64,
 }
 
@@ -31,6 +35,7 @@ pub fn create_transaction(
     to: Address,
     amount: i128,
     note: String,
+    tags: Vec<String>,
 ) -> Transaction {
     let mut counter: u64 = env
         .storage()
@@ -63,7 +68,17 @@ pub fn create_transaction(
     } else {
         "tx" // fallback for larger numbers
     };
-    let tx_id = Symbol::short(counter_str);
+    let tx_id = Symbol::new(&env, counter_str);
+    
+    let mut user_txs: Vec<Symbol> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::UserTransactions(from.clone()))
+        .unwrap_or_else(|| Vec::new(env));
+    
+    if user_txs.len() >= MAX_TRANSACTIONS_PER_USER {
+        panic_with_error!(env, TransactionError::TransactionLimitReached);
+    }
     
     let transaction = Transaction {
         id: tx_id.clone(),
@@ -71,6 +86,7 @@ pub fn create_transaction(
         to,
         amount,
         note: note.clone(),
+        tags: tags.clone(),
         timestamp: env.ledger().timestamp(),
     };
     
@@ -85,18 +101,38 @@ pub fn create_transaction(
         .set(&DataKey::TransactionCounter, &counter);
     
     // Add to user's transaction list
-    let mut user_txs: Vec<Symbol> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::UserTransactions(from.clone()))
-        .unwrap_or_else(|| Vec::new(env));
-    
     user_txs.push_back(tx_id.clone());
     env.storage()
         .persistent()
         .set(&DataKey::UserTransactions(from), &user_txs);
     
     transaction
+}
+
+/// Update the amount for a transaction (only transaction owner can update)
+pub fn update_transaction_amount(env: &Env, id: Symbol, caller: Address, new_amount: i128) -> bool {
+    let mut transaction: Transaction = match env
+        .storage()
+        .persistent()
+        .get(&DataKey::Transaction(id.clone())) {
+        Some(tx) => tx,
+        None => return false,
+    };
+    
+    if transaction.from != caller {
+        return false;
+    }
+    
+    if new_amount <= 0 {
+        return false;
+    }
+    
+    transaction.amount = new_amount;
+    env.storage()
+        .persistent()
+        .set(&DataKey::Transaction(id), &transaction);
+    
+    true
 }
 
 /// Get a transaction by ID
@@ -174,6 +210,36 @@ pub fn clear_user_transactions(env: &Env, user: Address) -> bool {
         .remove(&DataKey::UserTransactions(user));
     
     true
+}
+
+/// Get the last (most recent) transaction for a user
+pub fn get_last_transaction(env: &Env, user: Address) -> Option<Transaction> {
+    let transactions = get_user_transactions(env, user);
+    
+    if transactions.is_empty() {
+        return None;
+    }
+    
+    // Find the transaction with the latest timestamp
+    let mut latest_tx = None;
+    let mut latest_timestamp = 0u64;
+    
+    for tx in transactions.iter() {
+        if tx.timestamp > latest_timestamp {
+            latest_timestamp = tx.timestamp;
+            latest_tx = Some(tx.clone());
+        }
+    }
+    
+    latest_tx
+}
+
+/// Get the total number of transactions recorded in the contract
+pub fn get_total_transactions_count(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TransactionCounter)
+        .unwrap_or(0)
 }
 
 /// Check if a transaction exists

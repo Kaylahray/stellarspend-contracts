@@ -9,8 +9,11 @@ mod storage;
 
 pub use storage::{
     create_transaction, get_transaction, get_transaction_timestamp, get_user_transactions,
-    clear_user_transactions, transaction_exists, Transaction,
+    clear_user_transactions, transaction_exists, get_last_transaction, get_total_transactions_count, Transaction,
 };
+
+#[cfg(test)]
+mod test;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -22,6 +25,7 @@ pub enum TransactionError {
     TransactionNotFound = 4,
     InvalidAmount = 5,
     InvalidId = 6,
+    TransactionLimitReached = 7,
 }
 
 #[contracttype]
@@ -57,6 +61,7 @@ impl TransactionsContract {
         to: Address,
         amount: i128,
         note: String,
+        tags: Vec<String>,
     ) -> Symbol {
         from.require_auth();
         
@@ -64,7 +69,7 @@ impl TransactionsContract {
             panic_with_error!(&env, TransactionError::InvalidAmount);
         }
         
-        let transaction = create_transaction(&env, from.clone(), to, amount, note);
+        let transaction = create_transaction(&env, from.clone(), to, amount, note, tags);
         
         env.events().publish(
             (symbol_short!("tx"), symbol_short!("created")),
@@ -87,7 +92,31 @@ impl TransactionsContract {
         if success {
             env.events().publish(
                 (symbol_short!("tx"), symbol_short!("note_upd")),
-                id,
+                id.clone(),
+            );
+        }
+        
+        success
+    }
+
+    /// Update the amount for a transaction (only transaction owner can update)
+    pub fn update_transaction_amount(env: Env, id: Symbol, caller: Address, amount: i128) -> bool {
+        caller.require_auth();
+        
+        if amount <= 0 {
+            panic_with_error!(&env, TransactionError::InvalidAmount);
+        }
+        
+        if !transaction_exists(&env, id.clone()) {
+            panic_with_error!(&env, TransactionError::TransactionNotFound);
+        }
+        
+        let success = storage::update_transaction_amount(&env, id.clone(), caller, amount);
+        
+        if success {
+            env.events().publish(
+                (symbol_short!("tx"), symbol_short!("amount_up")),
+                id.clone(),
             );
         }
         
@@ -107,6 +136,16 @@ impl TransactionsContract {
     /// Get all transactions for a user
     pub fn get_user_transactions(env: Env, user: Address) -> Vec<Transaction> {
         get_user_transactions(&env, user)
+    }
+    
+    /// Get the last (most recent) transaction for a user
+    pub fn get_last_transaction(env: Env, user: Address) -> Option<Transaction> {
+        get_last_transaction(&env, user)
+    }
+    
+    /// Get the total number of transactions recorded in the contract
+    pub fn get_total_transactions_count(env: Env) -> u64 {
+        get_total_transactions_count(&env)
     }
     
     /// Clear all transactions for a user (only user can perform this action)
@@ -129,7 +168,12 @@ impl TransactionsContract {
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Admin)
     }
-    
+
+    /// Check if a transaction exists
+    pub fn transaction_exists(env: Env, id: Symbol) -> bool {
+        transaction_exists(&env, id)
+    }
+
     fn require_admin(env: &Env, caller: &Address) {
         let admin: Address = env
             .storage()

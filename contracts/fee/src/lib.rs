@@ -33,10 +33,9 @@ use crate::storage::{
 };
 pub use crate::storage::{BatchFeeResult, DataKey, MAX_BATCH_SIZE, MAX_FEE_BPS};
 use crate::utils::format_amount;
-use crate::validation::{validate_fee_bps_or_panic, validate_min_fee_or_panic};
-use shared::utils::validate_amount as validate_non_negative_amount;
 use crate::auth::require_admin;
 use crate::utils::compute_fee;
+use crate::validation::{validate_fee_bps_or_panic, validate_min_fee_or_panic, validate_max_fee_or_panic, validate_amount_positive_or_panic};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -100,7 +99,9 @@ impl FeeContract {
     }
 
     pub fn collect_fee(env: Env, payer: Address, amount: i128) -> i128 {
+        Self::require_initialized(&env);
         payer.require_auth();
+        validate_amount_positive_or_panic(&env, amount);
 
         let last_active = read_last_active(&env, &payer);
         let current_time = env.ledger().timestamp();
@@ -116,6 +117,7 @@ impl FeeContract {
     }
 
     pub fn collect_fee_batch(env: Env, payer: Address, amounts: Vec<i128>) -> BatchFeeResult {
+        Self::require_initialized(&env);
         payer.require_auth();
 
         let batch_size = amounts.len();
@@ -132,6 +134,7 @@ impl FeeContract {
         let mut decayed_amounts = Vec::new(&env);
         let mut total_original_amount: i128 = 0;
         for amount in amounts.iter() {
+            validate_amount_positive_or_panic(&env, amount);
             total_original_amount = total_original_amount
                 .checked_add(amount)
                 .unwrap_or_else(|| panic_with_error!(&env, FeeContractError::Overflow));
@@ -154,11 +157,13 @@ impl FeeContract {
     }
 
     pub fn update_activity(env: Env, user: Address) {
+        Self::require_initialized(&env);
         user.require_auth();
         write_last_active(&env, &user, env.ledger().timestamp());
     }
 
     pub fn get_last_active(env: Env, user: Address) -> u64 {
+        Self::require_initialized(&env);
         read_last_active(&env, &user)
     }
 
@@ -206,7 +211,6 @@ impl FeeContract {
 
         write_fee_bps(&env, fee_bps);
         FeeEvents::fee_bps_updated(&env, fee_bps);
-        FeeConfigEvents::fee_config_updated(&env, &admin, Some(fee_bps), None, None);
     }
 
     pub fn set_treasury(env: Env, _admin: Address, treasury: Address) {
@@ -225,19 +229,16 @@ impl FeeContract {
 
         write_min_fee(&env, min_fee);
         FeeEvents::min_fee_updated(&env, min_fee);
-        FeeConfigEvents::fee_config_updated(&env, &admin, None, Some(min_fee), None);
     }
 
-    pub fn set_max_fee(env: Env, admin: Address, max_fee: i128) {
-        admin.require_auth();
-        Self::require_admin(&env, &admin);
+    pub fn set_max_fee(env: Env, _admin: Address, max_fee: i128) {
+        require_admin(&env, &_admin);
         Self::require_unlocked(&env);
 
         let min_fee = read_min_fee(&env);
         validate_max_fee_or_panic(&env, max_fee, min_fee);
 
         write_max_fee(&env, max_fee);
-        FeeConfigEvents::fee_config_updated(&env, &admin, None, None, Some(max_fee));
     }
 
     /// Resets fee configuration to default values. Admin-only.
@@ -257,14 +258,17 @@ impl FeeContract {
     }
 
     pub fn get_admin(env: Env) -> Address {
+        Self::require_initialized(&env);
         read_admin(&env)
     }
 
     pub fn get_token(env: Env) -> Address {
+        Self::require_initialized(&env);
         read_token(&env)
     }
 
     pub fn get_treasury(env: Env) -> Address {
+        Self::require_initialized(&env);
         read_treasury(&env)
     }
 
@@ -281,14 +285,17 @@ impl FeeContract {
     }
 
     pub fn is_locked(env: Env) -> bool {
+        Self::require_initialized(&env);
         read_locked(&env)
     }
 
     pub fn get_current_cycle(env: Env) -> u64 {
+        Self::require_initialized(&env);
         read_current_cycle(&env)
     }
 
     pub fn get_escrow_balance(env: Env) -> i128 {
+        Self::require_initialized(&env);
         read_escrow_balance(&env)
     }
 
@@ -299,18 +306,22 @@ impl FeeContract {
     }
 
     pub fn get_pending_fees(env: Env, cycle: u64) -> i128 {
+        Self::require_initialized(&env);
         read_pending_fees(&env, cycle)
     }
 
     pub fn get_total_collected(env: Env) -> i128 {
+        Self::require_initialized(&env);
         read_total_collected(&env)
     }
 
     pub fn get_total_released(env: Env) -> i128 {
+        Self::require_initialized(&env);
         read_total_released(&env)
     }
 
     pub fn get_total_batch_calls(env: Env) -> u64 {
+        Self::require_initialized(&env);
         read_total_batch_calls(&env)
     }
 
