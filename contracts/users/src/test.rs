@@ -1,4 +1,4 @@
-use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
+use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
 use crate::{UsersContract, UsersContractClient, UserError};
 
 #[test]
@@ -244,6 +244,58 @@ fn test_multiple_unique_users() {
         let user = users.get(i).unwrap();
         assert!(client.is_user_registered(&user));
     }
+}
+
+#[test]
+fn test_set_and_get_default_currency() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(UsersContract, ());
+    let client = UsersContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let user = Address::generate(&env);
+    client.register_user(&user);
+
+    let currency = String::from_str(&env, "USD");
+    client.set_default_currency(&user, &currency);
+
+    assert_eq!(client.get_default_currency(&user), Some(currency));
+}
+
+#[test]
+#[should_panic]
+fn test_set_default_currency_fails_for_unregistered_user() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(UsersContract, ());
+    let client = UsersContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let user = Address::generate(&env);
+    let currency = String::from_str(&env, "USD");
+
+    client.set_default_currency(&user, &currency);
+}
+
+#[test]
+fn test_deactivate_user_marks_user_inactive() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(UsersContract, ());
+    let client = UsersContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let user = Address::generate(&env);
+    client.register_user(&user);
+    assert!(client.is_user_active(&user));
+
+    let success = client.deactivate_user(&user);
+    assert!(success);
+    assert!(!client.is_user_active(&user));
 }
 
 

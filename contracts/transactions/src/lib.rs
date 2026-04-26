@@ -73,7 +73,13 @@ impl TransactionsContract {
         
         env.events().publish(
             (symbol_short!("tx"), symbol_short!("created")),
-            (transaction.id.clone(), transaction.from.clone(), transaction.to.clone(), transaction.amount),
+            (
+                transaction.id.clone(),
+                transaction.from.clone(),
+                transaction.to.clone(),
+                transaction.amount,
+                transaction.timestamp,
+            ),
         );
         
         transaction.id

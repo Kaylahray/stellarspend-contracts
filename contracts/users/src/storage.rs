@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Env, Map, Vec};
+use soroban_sdk::{contracttype, Address, Env, Map, String, Vec};
 
 #[derive(Clone)]
 #[contracttype]
@@ -7,6 +7,10 @@ pub enum DataKey {
     Users,
     /// Count of unique users
     UserCount,
+    /// Default currency preference for a user
+    DefaultCurrency(Address),
+    /// Active status for a user
+    UserActive(Address),
 }
 
 /// Add a user to the set of unique users if not already present
@@ -40,6 +44,11 @@ pub fn add_user(env: &Env, user: Address) -> bool {
     env.storage()
         .persistent()
         .set(&DataKey::UserCount, &count);
+
+    // Newly registered users are active by default.
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserActive(user), &true);
     
     true
 }
@@ -92,6 +101,13 @@ pub fn reset_user_data(env: &Env, user: Address) -> bool {
         .persistent()
         .set(&DataKey::UserCount, &count);
 
+    env.storage()
+        .persistent()
+        .remove(&DataKey::DefaultCurrency(user.clone()));
+    env.storage()
+        .persistent()
+        .remove(&DataKey::UserActive(user));
+
     true
 }
 
@@ -108,4 +124,38 @@ pub fn get_all_users(env: &Env) -> Vec<Address> {
         result.push_back(user);
     }
     result
+}
+
+/// Set default currency preference for a user.
+pub fn set_default_currency(env: &Env, user: Address, currency: String) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::DefaultCurrency(user), &currency);
+}
+
+/// Get default currency preference for a user.
+pub fn get_default_currency(env: &Env, user: Address) -> Option<String> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::DefaultCurrency(user))
+}
+
+/// Mark a user account as inactive.
+pub fn deactivate_user(env: &Env, user: Address) -> bool {
+    if !user_exists(env, user.clone()) {
+        return false;
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserActive(user), &false);
+    true
+}
+
+/// Returns whether the user account is active.
+pub fn is_user_active(env: &Env, user: Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserActive(user))
+        .unwrap_or(false)
 }

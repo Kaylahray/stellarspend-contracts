@@ -1,5 +1,6 @@
 ﻿use soroban_sdk::{
-    testutils::Address as _, Address, Env, Symbol, String, Vec,
+    testutils::{Address as _, Ledger},
+    Address, Env, Symbol, String, Vec,
 };
 use crate::{TransactionsContract, TransactionsContractClient, TransactionError, Transaction};
 
@@ -297,4 +298,30 @@ fn test_transaction_exists() {
 
     let fake_id = Symbol::new(&env, "not_here");
     assert!(!client.transaction_exists(&fake_id));
+}
+
+#[test]
+fn test_create_transaction_stores_creation_timestamp() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(TransactionsContract, ());
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    env.ledger().set_timestamp(1_700_000_123);
+
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    let tx_id = client.create_transaction(
+        &from,
+        &to,
+        &500,
+        &String::from_str(&env, "timestamped"),
+        &Vec::new(&env),
+    );
+
+    let tx = client.get_transaction(&tx_id).unwrap();
+    assert_eq!(tx.timestamp, 1_700_000_123);
+    assert_eq!(client.get_transaction_timestamp(&tx_id), Some(1_700_000_123));
 }
