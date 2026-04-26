@@ -325,52 +325,21 @@ impl FeeContract {
         read_total_batch_calls(&env)
     }
 
-    pub fn set_user_tier(env: Env, admin: Address, user: Address, tier: Symbol) {
-        require_admin(&env, &admin);
-        if !is_valid_tier(&env, &tier) {
-            panic_with_error!(&env, FeeContractError::InvalidTier);
-        }
-        write_user_tier(&env, &user, &tier);
-        TierEvents::tier_updated(&env, &user, &tier);
-    }
-
-    pub fn get_user_tier(env: Env, user: Address) -> Option<Symbol> {
-        Self::require_initialized(&env);
-        read_user_tier(&env, &user)
-    }
-
-    pub fn remove_user_tier(env: Env, admin: Address, user: Address) {
-        require_admin(&env, &admin);
-        remove_user_tier(&env, &user);
-        TierEvents::tier_removed(&env, &user);
-    }
-
-    pub fn calculate_fee_amount(env: Env, amount: i128, bps: u32) -> i128 {
-        compute_fee(amount, bps).unwrap_or_else(|| panic_with_error!(&env, FeeContractError::Overflow))
-    }
-
-    pub fn preview_batch_fee(env: Env, amounts: Vec<i128>) -> i128 {
-        Self::require_initialized(&env);
-        let mut total_fee: i128 = 0;
-        let fee_bps = read_fee_bps(&env);
+    pub fn preview_batch_fee(env: Env, _payer: Address, amounts: Vec<i128>) -> i128 {
+        let mut total: i128 = 0;
         for amount in amounts.iter() {
-            let fee = compute_fee(amount, fee_bps)
-                .unwrap_or_else(|| panic_with_error!(&env, FeeContractError::Overflow));
-            total_fee = total_fee.checked_add(fee)
-                .unwrap_or_else(|| panic_with_error!(&env, FeeContractError::Overflow));
+            total = total.checked_add(amount).unwrap_or(0);
         }
-        total_fee
-    }
-
-    fn require_initialized(env: &Env) {
-        if !has_admin(env) {
-            panic_with_error!(env, FeeContractError::NotInitialized);
-        }
+        total
     }
 
     fn require_unlocked(env: &Env) {
         if read_locked(env) {
             panic_with_error!(env, FeeContractError::Locked);
         }
+    }
+
+    fn require_admin(env: &Env, admin: &Address) {
+        require_admin(env, admin);
     }
 }
