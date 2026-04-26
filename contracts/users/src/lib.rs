@@ -7,7 +7,7 @@ use soroban_sdk::{
 
 mod storage;
 
-pub use storage::{add_user, get_user_count, user_exists, get_all_users, reset_user_data};
+pub use storage::{add_user, get_user_count, user_exists, get_all_users, reset_user_data, get_user_active_status, set_user_active_status};
 
 #[cfg(test)]
 mod test;
@@ -108,6 +108,28 @@ impl UsersContract {
     /// Get the admin address
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Admin)
+    }
+
+    /// Get user activity status
+    pub fn get_user_active_status(env: Env, user: Address) -> bool {
+        get_user_active_status(&env, user)
+    }
+
+    /// Set user activity status (only admin can set)
+    pub fn set_user_active_status(env: Env, caller: Address, user: Address, is_active: bool) -> bool {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        
+        let success = set_user_active_status(&env, user.clone(), is_active);
+        
+        if success {
+            env.events().publish(
+                (symbol_short!("users"), symbol_short!("active_upd")),
+                (user, is_active),
+            );
+        }
+        
+        success
     }
     
     fn require_admin(env: &Env, caller: &Address) {

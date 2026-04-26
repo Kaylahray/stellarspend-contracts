@@ -7,6 +7,8 @@ pub enum DataKey {
     Users,
     /// Count of unique users
     UserCount,
+    /// User activity status (user address -> bool)
+    UserActive(Address),
 }
 
 /// Add a user to the set of unique users if not already present
@@ -29,6 +31,11 @@ pub fn add_user(env: &Env, user: Address) -> bool {
     env.storage()
         .persistent()
         .set(&DataKey::Users, &users);
+    
+    // Set user as active by default
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserActive(user.clone()), &true);
     
     // Update count
     let mut count: u64 = env
@@ -108,4 +115,26 @@ pub fn get_all_users(env: &Env) -> Vec<Address> {
         result.push_back(user);
     }
     result
+}
+
+/// Get user activity status
+pub fn get_user_active_status(env: &Env, user: Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserActive(user))
+        .unwrap_or(false)
+}
+
+/// Set user activity status
+pub fn set_user_active_status(env: &Env, user: Address, is_active: bool) -> bool {
+    // Only allow setting status for existing users
+    if !user_exists(env, user.clone()) {
+        return false;
+    }
+    
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserActive(user), &is_active);
+    
+    true
 }

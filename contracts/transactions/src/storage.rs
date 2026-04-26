@@ -1,6 +1,15 @@
 use soroban_sdk::{contracttype, Address, Env, Vec, Symbol, String, panic_with_error};
 use crate::TransactionError;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum TransactionStatus {
+    Pending = 0,
+    Completed = 1,
+    Failed = 2,
+    Cancelled = 3,
+}
+
 pub const MAX_TRANSACTIONS_PER_USER: u32 = 1000;
 
 #[derive(Clone)]
@@ -13,6 +22,7 @@ pub struct Transaction {
     pub note: String,
     pub tags: Vec<String>,
     pub timestamp: u64,
+    pub status: TransactionStatus,
 }
 
 #[derive(Clone)]
@@ -88,6 +98,7 @@ pub fn create_transaction(
         note: note.clone(),
         tags: tags.clone(),
         timestamp: env.ledger().timestamp(),
+        status: TransactionStatus::Pending,
     };
     
     // Store the transaction
@@ -157,6 +168,36 @@ pub fn update_transaction_note(env: &Env, id: Symbol, caller: Address, new_note:
     
     // Update the note
     transaction.note = new_note.clone();
+    
+    // Store updated transaction
+    env.storage()
+        .persistent()
+        .set(&DataKey::Transaction(id), &transaction);
+    
+    true
+}
+
+/// Update transaction status (only admin or transaction owner can update)
+pub fn update_transaction_status(env: &Env, id: Symbol, caller: Address, new_status: TransactionStatus) -> bool {
+    let mut transaction: Transaction = match env
+        .storage()
+        .persistent()
+        .get(&DataKey::Transaction(id.clone())) {
+        Some(tx) => tx,
+        None => return false,
+    };
+    
+    // Verify caller is the transaction owner or admin
+    if transaction.from != caller {
+        // Check if caller is admin
+        let admin: Option<Address> = env.storage().instance().get(&crate::DataKey::Admin);
+        if admin.is_none() || admin.unwrap() != caller {
+            return false;
+        }
+    }
+    
+    // Update the status
+    transaction.status = new_status;
     
     // Store updated transaction
     env.storage()
@@ -245,4 +286,13 @@ pub fn get_total_transactions_count(env: &Env) -> u64 {
 /// Check if a transaction exists
 pub fn transaction_exists(env: &Env, id: Symbol) -> bool {
     env.storage().persistent().has(&DataKey::Transaction(id))
+}
+
+/// Check if a user is the owner of a transaction
+pub fn is_transaction_owner(env: &Env, id: Symbol, user: Address) -> bool {
+    if let Some(transaction) = get_transaction(env, id) {
+        transaction.from == user
+    } else {
+        false
+    }
 }
