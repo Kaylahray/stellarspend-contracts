@@ -1,5 +1,5 @@
 use soroban_sdk::{Env, Address, panic_with_error};
-use crate::storage::{has_admin, read_admin};
+use crate::storage::{has_admin, read_admin, read_locked};
 use crate::FeeContractError;
 
 /// Validates that the given address is the contract admin and has authorized the call.
@@ -18,4 +18,13 @@ pub fn require_admin(env: &Env, address: &Address) {
     }
 
     address.require_auth();
+}
+
+/// Validates that the contract is not locked.
+/// 
+/// Panics with `Locked` if the contract is currently locked.
+pub fn require_unlocked(env: &Env) {
+    if read_locked(env) {
+        panic_with_error!(env, FeeContractError::Locked);
+    }
 }

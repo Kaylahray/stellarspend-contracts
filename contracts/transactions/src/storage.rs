@@ -212,6 +212,36 @@ pub fn clear_user_transactions(env: &Env, user: Address) -> bool {
     true
 }
 
+/// Get the last (most recent) transaction for a user
+pub fn get_last_transaction(env: &Env, user: Address) -> Option<Transaction> {
+    let transactions = get_user_transactions(env, user);
+    
+    if transactions.is_empty() {
+        return None;
+    }
+    
+    // Find the transaction with the latest timestamp
+    let mut latest_tx = None;
+    let mut latest_timestamp = 0u64;
+    
+    for tx in transactions.iter() {
+        if tx.timestamp > latest_timestamp {
+            latest_timestamp = tx.timestamp;
+            latest_tx = Some(tx.clone());
+        }
+    }
+    
+    latest_tx
+}
+
+/// Get the total number of transactions recorded in the contract
+pub fn get_total_transactions_count(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TransactionCounter)
+        .unwrap_or(0)
+}
+
 /// Check if a transaction exists
 pub fn transaction_exists(env: &Env, id: Symbol) -> bool {
     env.storage().persistent().has(&DataKey::Transaction(id))
