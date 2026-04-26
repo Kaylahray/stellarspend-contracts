@@ -40,11 +40,12 @@ fn test_create_transaction() {
     let to = Address::generate(&env);
     let amount: i128 = 1000;
     let note = String::from_str(&env, "Test transaction");
+    let memo = String::from_str(&env, "Payment memo");
     let mut tags = Vec::new(&env);
     tags.push_back(String::from_str(&env, "groceries"));
     tags.push_back(String::from_str(&env, "monthly"));
 
-    let tx_id = client.create_transaction(&from, &to, &amount, &note, &tags);
+    let tx_id = client.create_transaction(&from, &to, &amount, &note, &memo, &tags);
 
     let transaction = client.get_transaction(&tx_id).unwrap();
     assert_eq!(transaction.id, tx_id);
@@ -52,6 +53,7 @@ fn test_create_transaction() {
     assert_eq!(transaction.to, to);
     assert_eq!(transaction.amount, amount);
     assert_eq!(transaction.note, note);
+    assert_eq!(transaction.memo, memo);
     assert_eq!(transaction.tags.len(), 2);
     assert_eq!(transaction.tags.get(0), Some(String::from_str(&env, "groceries")));
     assert_eq!(transaction.tags.get(1), Some(String::from_str(&env, "monthly")));
@@ -291,10 +293,50 @@ fn test_transaction_exists() {
     let amount: i128 = 1000;
     let note = String::from_str(&env, "Existence test");
 
-    let tx_id = client.create_transaction(&from, &to, &amount, &note, &Vec::new(&env));
+    let memo = String::from_str(&env, "Existence test memo");
+    let tx_id = client.create_transaction(&from, &to, &amount, &note, &memo, &Vec::new(&env));
 
     assert!(client.transaction_exists(&tx_id));
 
     let fake_id = Symbol::new(&env, "not_here");
     assert!(!client.transaction_exists(&fake_id));
+}
+
+#[test]
+fn test_get_transaction_memo() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(TransactionsContract, ());
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    let amount: i128 = 1000;
+    let note = String::from_str(&env, "Test transaction");
+    let memo = String::from_str(&env, "Important payment memo");
+    let tags = Vec::new(&env);
+
+    let tx_id = client.create_transaction(&from, &to, &amount, &note, &memo, &tags);
+
+    // Test get_transaction_memo function
+    let retrieved_memo = client.get_transaction_memo(&tx_id).unwrap();
+    assert_eq!(retrieved_memo, memo);
+}
+
+#[test]
+fn test_get_transaction_memo_nonexistent() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(TransactionsContract, ());
+    let client = TransactionsContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let fake_id = Symbol::new(&env, "not_here");
+    
+    // Test get_transaction_memo for non-existent transaction
+    let memo = client.get_transaction_memo(&fake_id);
+    assert!(memo.is_none());
 }
