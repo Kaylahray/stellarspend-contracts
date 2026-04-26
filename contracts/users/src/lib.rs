@@ -2,12 +2,12 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Env, Vec,
+    Env, Vec, String,
 };
 
 mod storage;
 
-pub use storage::{add_user, get_user_count, user_exists, get_all_users, reset_user_data, get_user_active_status, set_user_active_status};
+pub use storage::{add_user, get_user_count, user_exists, get_all_users, reset_user_data, get_user_active_status, set_user_active_status, get_user_currency, set_user_currency};
 
 #[cfg(test)]
 mod test;
@@ -126,6 +126,27 @@ impl UsersContract {
             env.events().publish(
                 (symbol_short!("users"), symbol_short!("active_upd")),
                 (user, is_active),
+            );
+        }
+        
+        success
+    }
+
+    /// Get user's preferred currency
+    pub fn get_user_currency(env: Env, user: Address) -> String {
+        get_user_currency(&env, user)
+    }
+
+    /// Set user's preferred currency (only the user can set their own currency)
+    pub fn set_user_currency(env: Env, user: Address, currency: String) -> bool {
+        user.require_auth();
+        
+        let success = set_user_currency(&env, user.clone(), currency.clone());
+        
+        if success {
+            env.events().publish(
+                (symbol_short!("users"), symbol_short!("currency_upd")),
+                (user, currency),
             );
         }
         

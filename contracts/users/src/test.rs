@@ -1,4 +1,4 @@
-use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
+use soroban_sdk::{testutils::Address as _, Address, Env, Vec, String};
 use crate::{UsersContract, UsersContractClient, UserError};
 
 #[test]
@@ -244,6 +244,63 @@ fn test_multiple_unique_users() {
         let user = users.get(i).unwrap();
         assert!(client.is_user_registered(&user));
     }
+}
+
+#[test]
+fn test_get_user_currency_default() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(UsersContract, ());
+    let client = UsersContractClient::new(&env, &contract_id);
+    
+    client.initialize(&admin);
+    
+    let user = Address::generate(&env);
+    client.register_user(&user);
+    
+    // Test default currency is USD
+    let currency = client.get_user_currency(&user);
+    assert_eq!(currency, String::from_str(&env, "USD"));
+}
+
+#[test]
+fn test_set_user_currency() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(UsersContract, ());
+    let client = UsersContractClient::new(&env, &contract_id);
+    
+    client.initialize(&admin);
+    
+    let user = Address::generate(&env);
+    client.register_user(&user);
+    
+    // Test setting custom currency
+    let euro = String::from_str(&env, "EUR");
+    let success = client.set_user_currency(&user, &euro);
+    assert!(success);
+    
+    // Verify currency was set
+    let currency = client.get_user_currency(&user);
+    assert_eq!(currency, euro);
+}
+
+#[test]
+#[should_panic]
+fn test_set_user_currency_unregistered_user_fails() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(UsersContract, ());
+    let client = UsersContractClient::new(&env, &contract_id);
+    
+    client.initialize(&admin);
+    
+    let user = Address::generate(&env);
+    // Don't register the user
+    
+    // Try to set currency for unregistered user - should fail
+    let euro = String::from_str(&env, "EUR");
+    client.set_user_currency(&user, &euro);
 }
 
 

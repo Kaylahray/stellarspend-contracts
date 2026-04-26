@@ -20,6 +20,7 @@ pub struct Transaction {
     pub to: Address,
     pub amount: i128,
     pub note: String,
+    pub memo: String,
     pub tags: Vec<String>,
     pub timestamp: u64,
     pub status: TransactionStatus,
@@ -45,6 +46,7 @@ pub fn create_transaction(
     to: Address,
     amount: i128,
     note: String,
+    memo: String,
     tags: Vec<String>,
 ) -> Transaction {
     let mut counter: u64 = env
@@ -96,6 +98,7 @@ pub fn create_transaction(
         to,
         amount,
         note: note.clone(),
+        memo: memo.clone(),
         tags: tags.clone(),
         timestamp: env.ledger().timestamp(),
         status: TransactionStatus::Pending,
@@ -295,4 +298,9 @@ pub fn is_transaction_owner(env: &Env, id: Symbol, user: Address) -> bool {
     } else {
         false
     }
+}
+
+/// Get transaction memo
+pub fn get_transaction_memo(env: &Env, id: Symbol) -> Option<String> {
+    get_transaction(env, id).map(|tx| tx.memo)
 }

@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Env, Map, Vec};
+use soroban_sdk::{contracttype, Address, Env, Map, Vec, String};
 
 #[derive(Clone)]
 #[contracttype]
@@ -9,6 +9,8 @@ pub enum DataKey {
     UserCount,
     /// User activity status (user address -> bool)
     UserActive(Address),
+    /// User currency preference (user address -> String)
+    UserCurrency(Address),
 }
 
 /// Add a user to the set of unique users if not already present
@@ -135,6 +137,28 @@ pub fn set_user_active_status(env: &Env, user: Address, is_active: bool) -> bool
     env.storage()
         .persistent()
         .set(&DataKey::UserActive(user), &is_active);
+    
+    true
+}
+
+/// Get user's preferred currency
+pub fn get_user_currency(env: &Env, user: Address) -> String {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserCurrency(user))
+        .unwrap_or_else(|| String::from_str(env, "USD"))
+}
+
+/// Set user's preferred currency
+pub fn set_user_currency(env: &Env, user: Address, currency: String) -> bool {
+    // Only allow setting currency for existing users
+    if !user_exists(env, user.clone()) {
+        return false;
+    }
+    
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserCurrency(user), &currency);
     
     true
 }
