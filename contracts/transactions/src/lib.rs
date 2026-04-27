@@ -27,7 +27,10 @@ pub enum TransactionError {
     InvalidAmount = 5,
     InvalidId = 6,
     TransactionLimitReached = 7,
+    InvalidNoteLength = 8,
 }
+
+const MAX_NOTE_LENGTH: usize = 256;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,6 +73,10 @@ impl TransactionsContract {
         if amount <= 0 {
             panic_with_error!(&env, TransactionError::InvalidAmount);
         }
+
+        if note.len() > MAX_NOTE_LENGTH {
+            panic_with_error!(&env, TransactionError::InvalidNoteLength);
+        }
         
         let transaction = create_transaction(&env, from.clone(), to, amount, note, memo, tags);
         
@@ -85,6 +92,10 @@ impl TransactionsContract {
     pub fn update_transaction_note(env: Env, id: Symbol, caller: Address, note: String) -> bool {
         caller.require_auth();
         
+        if note.len() > MAX_NOTE_LENGTH {
+            panic_with_error!(&env, TransactionError::InvalidNoteLength);
+        }
+
         if !transaction_exists(&env, id.clone()) {
             panic_with_error!(&env, TransactionError::TransactionNotFound);
         }
@@ -177,6 +188,24 @@ impl TransactionsContract {
     }
 
     /// Update the status of a transaction (only owner/admin allowed)
+    pub fn delete_transaction(env: Env, caller: Address, id: Symbol) -> bool {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+
+        if !transaction_exists(&env, id.clone()) {
+            panic_with_error!(&env, TransactionError::TransactionNotFound);
+        }
+
+        let success = storage::delete_transaction(&env, id.clone());
+        if success {
+            env.events().publish(
+                (symbol_short!("tx"), symbol_short!("deleted")),
+                id.clone(),
+            );
+        }
+        success
+    }
+
     pub fn update_transaction_status(env: Env, id: Symbol, caller: Address, status: TransactionStatus) -> bool {
         caller.require_auth();
         

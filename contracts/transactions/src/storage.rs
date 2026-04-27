@@ -300,6 +300,44 @@ pub fn is_transaction_owner(env: &Env, id: Symbol, user: Address) -> bool {
     }
 }
 
+/// Delete a transaction record and remove it from the user's transaction list.
+pub fn delete_transaction(env: &Env, id: Symbol) -> bool {
+    let transaction: Transaction = match env
+        .storage()
+        .persistent()
+        .get(&DataKey::Transaction(id.clone())) {
+        Some(tx) => tx,
+        None => return false,
+    };
+
+    let owner = transaction.from.clone();
+
+    env.storage()
+        .persistent()
+        .remove(&DataKey::Transaction(id.clone()));
+
+    let tx_ids: Vec<Symbol> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::UserTransactions(owner.clone()))
+        .unwrap_or_else(|| Vec::new(env));
+
+    let mut remaining: Vec<Symbol> = Vec::new(env);
+    for tx_id in tx_ids.iter() {
+        if tx_id != id {
+            remaining.push_back(tx_id.clone());
+        }
+    }
+
+    if remaining.is_empty() {
+        env.storage().persistent().remove(&DataKey::UserTransactions(owner));
+    } else {
+        env.storage().persistent().set(&DataKey::UserTransactions(owner), &remaining);
+    }
+
+    true
+}
+
 /// Get transaction memo
 pub fn get_transaction_memo(env: &Env, id: Symbol) -> Option<String> {
     get_transaction(env, id).map(|tx| tx.memo)
