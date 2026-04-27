@@ -6,11 +6,12 @@ use soroban_sdk::{
 };
 
 mod storage;
+mod utils;
 
 pub use storage::{
     create_transaction, get_transaction, get_transaction_timestamp, get_user_transactions,
     clear_user_transactions, transaction_exists, get_last_transaction, get_total_transactions_count, 
-    update_transaction_status, is_transaction_owner, get_transaction_memo, Transaction, TransactionStatus,
+    update_transaction_status, is_transaction_owner, get_transaction_memo, get_all_transactions,
 };
 
 #[cfg(test)]
@@ -140,6 +141,11 @@ impl TransactionsContract {
         get_user_transactions(&env, user)
     }
     
+    /// Get all transactions for a user (alias for get_user_transactions)
+    pub fn get_transactions_by_user(env: Env, user: Address) -> Vec<Transaction> {
+        get_user_transactions(&env, user)
+    }
+    
     /// Get the last (most recent) transaction for a user
     pub fn get_last_transaction(env: Env, user: Address) -> Option<Transaction> {
         get_last_transaction(&env, user)
@@ -148,6 +154,11 @@ impl TransactionsContract {
     /// Get the total number of transactions recorded in the contract
     pub fn get_total_transactions_count(env: Env) -> u64 {
         get_total_transactions_count(&env)
+    }
+    
+    /// Get all transactions in the contract
+    pub fn get_all_transactions(env: Env) -> Vec<Transaction> {
+        get_all_transactions(&env)
     }
     
     /// Clear all transactions for a user (only user can perform this action)
