@@ -365,3 +365,35 @@ pub fn get_all_transactions(env: &Env) -> Vec<Transaction> {
     
     transactions
 }
+
+/// Get a paginated subset of all transactions.
+///
+/// - `offset`: number of transactions to skip (0-based)
+/// - `limit`:  maximum number of transactions to return (capped at 100)
+pub fn get_transactions_paginated(env: &Env, offset: u32, limit: u32) -> Vec<Transaction> {
+    let limit = limit.min(100);
+    let tx_ids: Vec<Symbol> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::AllTransactions)
+        .unwrap_or_else(|| Vec::new(env));
+
+    let mut transactions = Vec::new(env);
+    let total = tx_ids.len();
+
+    if offset >= total || limit == 0 {
+        return transactions;
+    }
+
+    let end = (offset + limit).min(total);
+
+    for i in offset..end {
+        if let Some(tx_id) = tx_ids.get(i) {
+            if let Some(tx) = get_transaction(env, tx_id) {
+                transactions.push_back(tx);
+            }
+        }
+    }
+
+    transactions
+}

@@ -12,6 +12,7 @@ pub use storage::{
     create_transaction, get_transaction, get_transaction_timestamp, get_user_transactions,
     clear_user_transactions, transaction_exists, get_last_transaction, get_total_transactions_count, 
     update_transaction_status, is_transaction_owner, get_transaction_memo, get_all_transactions,
+    get_transactions_paginated,
 };
 
 #[cfg(test)]
@@ -174,6 +175,14 @@ impl TransactionsContract {
     /// Get all transactions in the contract
     pub fn get_all_transactions(env: Env) -> Vec<Transaction> {
         get_all_transactions(&env)
+    }
+    
+    /// Get a paginated subset of all transactions.
+    ///
+    /// - `offset`: number of transactions to skip (0-based)
+    /// - `limit`:  maximum number of transactions to return (capped at 100)
+    pub fn get_transactions_paginated(env: Env, offset: u32, limit: u32) -> Vec<Transaction> {
+        get_transactions_paginated(&env, offset, limit)
     }
     
     /// Clear all transactions for a user (only user can perform this action)
