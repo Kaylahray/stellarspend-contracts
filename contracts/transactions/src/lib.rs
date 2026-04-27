@@ -67,7 +67,11 @@ impl TransactionsContract {
     ) -> Symbol {
         from.require_auth();
         
-        if amount <= 0 {
+        if amount < storage::MIN_TRANSACTION_AMOUNT {
+            panic_with_error!(&env, TransactionError::InvalidAmount);
+        }
+        
+        if amount > storage::MAX_TRANSACTION_AMOUNT {
             panic_with_error!(&env, TransactionError::InvalidAmount);
         }
         
@@ -105,7 +109,7 @@ impl TransactionsContract {
     pub fn update_transaction_amount(env: Env, id: Symbol, caller: Address, amount: i128) -> bool {
         caller.require_auth();
         
-        if amount <= 0 {
+        if amount < storage::MIN_TRANSACTION_AMOUNT || amount > storage::MAX_TRANSACTION_AMOUNT {
             panic_with_error!(&env, TransactionError::InvalidAmount);
         }
         

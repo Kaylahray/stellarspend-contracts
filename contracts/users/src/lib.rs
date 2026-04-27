@@ -7,7 +7,7 @@ use soroban_sdk::{
 
 mod storage;
 
-pub use storage::{add_user, get_user_count, user_exists, get_all_users, reset_user_data, get_user_active_status, set_user_active_status, get_user_currency, set_user_currency};
+pub use storage::{add_user, get_user_count, user_exists, get_all_users, reset_user_data, get_user_active_status, set_user_active_status, get_user_currency, set_user_currency, get_user_last_login, set_user_last_login};
 
 #[cfg(test)]
 mod test;
@@ -20,6 +20,7 @@ pub enum UserError {
     AlreadyInitialized = 2,
     Unauthorized = 3,
     UserNotFound = 4,
+    UserAlreadyExists = 5,
 }
 
 #[contracttype]
@@ -51,9 +52,16 @@ impl UsersContract {
     /// Register a user (adds them to the unique user set)
     /// Can be called by anyone to register themselves or others
     pub fn register_user(env: Env, user: Address) -> bool {
+        if user_exists(&env, user.clone()) {
+            return false; // Reject duplicate users
+        }
+        
         let is_new = add_user(&env, user.clone());
         
         if is_new {
+            // Set last login timestamp on registration
+            set_user_last_login(&env, user.clone(), env.ledger().timestamp());
+            
             env.events().publish(
                 (symbol_short!("users"), symbol_short!("reg")),
                 user,
@@ -151,6 +159,11 @@ impl UsersContract {
         }
         
         success
+    }
+    
+    /// Get user's last login timestamp
+    pub fn get_user_last_login(env: Env, user: Address) -> Option<u64> {
+        get_user_last_login(&env, user)
     }
     
     fn require_admin(env: &Env, caller: &Address) {

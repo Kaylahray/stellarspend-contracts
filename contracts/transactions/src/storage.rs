@@ -11,6 +11,8 @@ pub enum TransactionStatus {
 }
 
 pub const MAX_TRANSACTIONS_PER_USER: u32 = 1000;
+pub const MIN_TRANSACTION_AMOUNT: i128 = 1; // Minimum 1 unit
+pub const MAX_TRANSACTION_AMOUNT: i128 = 1_000_000_000_000; // Maximum 1 trillion units
 
 #[derive(Clone)]
 #[contracttype]
@@ -137,7 +139,7 @@ pub fn update_transaction_amount(env: &Env, id: Symbol, caller: Address, new_amo
         return false;
     }
     
-    if new_amount <= 0 {
+    if new_amount < MIN_TRANSACTION_AMOUNT || new_amount > MAX_TRANSACTION_AMOUNT {
         return false;
     }
     

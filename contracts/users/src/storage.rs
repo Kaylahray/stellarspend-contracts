@@ -11,6 +11,8 @@ pub enum DataKey {
     UserActive(Address),
     /// User currency preference (user address -> String)
     UserCurrency(Address),
+    /// User last login timestamp (user address -> u64)
+    UserLastLogin(Address),
 }
 
 /// Add a user to the set of unique users if not already present
@@ -159,6 +161,27 @@ pub fn set_user_currency(env: &Env, user: Address, currency: String) -> bool {
     env.storage()
         .persistent()
         .set(&DataKey::UserCurrency(user), &currency);
+    
+    true
+}
+
+/// Get user's last login timestamp
+pub fn get_user_last_login(env: &Env, user: Address) -> Option<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UserLastLogin(user))
+}
+
+/// Set user's last login timestamp
+pub fn set_user_last_login(env: &Env, user: Address, timestamp: u64) -> bool {
+    // Only allow setting last login for existing users
+    if !user_exists(env, user.clone()) {
+        return false;
+    }
+    
+    env.storage()
+        .persistent()
+        .set(&DataKey::UserLastLogin(user), &timestamp);
     
     true
 }
